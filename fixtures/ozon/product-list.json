@@ -1,0 +1,21 @@
+{
+  "result": {
+    "items": [
+      {
+        "product_id": 1001,
+        "offer_id": "SKU001",
+        "name": "Женский платок квадратный",
+        "visibility": "EMPTY_STOCK",
+        "barcodes": [],
+        "stocks": [
+          {
+            "warehouse_id": 1,
+            "warehouse_name": "FBS Москва",
+            "present": 0
+          }
+        ]
+      }
+    ],
+    "last_id": ""
+  }
+}

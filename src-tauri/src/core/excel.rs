@@ -1,0 +1,311 @@
+use anyhow::Result;
+use calamine::{open_workbook_auto, Data, Reader};
+use rust_xlsxwriter::{Color, Format, Workbook};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentRow {
+    pub sku: String,
+    pub title: String,
+    pub description: String,
+    pub rich_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchResultRow {
+    pub sku: String,
+    pub title: String,
+    pub image_count: usize,
+    pub status: String,
+    pub uploaded_sku: String,
+    pub task_id: String,
+    pub oss_folder: String,
+    pub error: String,
+}
+
+pub fn create_upload_template(path: &Path) -> Result<()> {
+    let mut workbook = Workbook::new();
+    let header_format = Format::new()
+        .set_bold()
+        .set_background_color(Color::RGB(0xEAF3FF));
+    let wrap = Format::new().set_text_wrap();
+
+    let sheet = workbook.add_worksheet();
+    sheet.set_name("上架填写")?;
+    let headers = [
+        "货号",
+        "标题",
+        "简介",
+        "json富文本内容",
+        "是否上传成功",
+        "上传成功SKU",
+        "Ozon task_id",
+        "OSS 文件夹",
+        "错误信息",
+    ];
+    for (index, header) in headers.iter().enumerate() {
+        sheet.write_with_format(0, index as u16, *header, &header_format)?;
+    }
+    sheet.write(1, 0, "SKU001")?;
+    sheet.write(1, 1, "Женский платок квадратный с геометрическим принтом")?;
+    sheet.write_with_format(
+        1,
+        2,
+        "Легкий женский платок для повседневного образа. Подходит для прогулок, поездок и сочетания с разной одеждой.",
+        &wrap,
+    )?;
+    sheet.set_freeze_panes(1, 0)?;
+    sheet.set_column_width(0, 18)?;
+    sheet.set_column_width(1, 48)?;
+    sheet.set_column_width(2, 82)?;
+    sheet.set_column_width(3, 36)?;
+    sheet.set_column_width(8, 70)?;
+
+    let guide = workbook.add_worksheet();
+    guide.set_name("填写说明")?;
+    guide.write_with_format(0, 0, "字段", &header_format)?;
+    guide.write_with_format(0, 1, "说明", &header_format)?;
+    let rows = [
+        ("货号", "必须和图片目录下的 SKU 文件夹名完全一致。"),
+        ("标题", "提交给 Ozon 的商品标题。"),
+        ("简介", "提交给 Ozon 的商品描述。"),
+        (
+            "json富文本内容",
+            "可选；填写 Ozon 富内容 JSON 时会替换其中图片 URL。",
+        ),
+        ("Ozon.Video", "可新增同名页签，按货号填写视频链接。"),
+    ];
+    for (row, (field, desc)) in rows.iter().enumerate() {
+        guide.write((row + 1) as u32, 0, *field)?;
+        guide.write((row + 1) as u32, 1, *desc)?;
+    }
+    guide.set_column_width(0, 20)?;
+    guide.set_column_width(1, 90)?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    workbook.save(path)?;
+    Ok(())
+}
+
+pub fn read_content_rows(path: &Path) -> Result<Vec<ContentRow>> {
+    let mut workbook = open_workbook_auto(path)?;
+    let sheet_name = workbook
+        .sheet_names()
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Excel 文件没有工作表"))?;
+    let range = workbook.worksheet_range(&sheet_name)?;
+    let mut rows = range.rows();
+    let headers = rows
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Excel 缺少表头"))?
+        .iter()
+        .map(cell_text)
+        .collect::<Vec<_>>();
+
+    let sku_idx = header_index(&headers, &["货号", "sku", "offer_id"])?;
+    let title_idx = header_index(&headers, &["标题", "title", "name"])?;
+    let desc_idx = header_index(&headers, &["简介", "描述", "description"])?;
+    let rich_idx = optional_header_index(
+        &headers,
+        &["json富文本内容", "json富内容", "富文本json", "rich_json"],
+    );
+
+    let mut result = Vec::new();
+    for row in rows {
+        let sku = cell_at(row, sku_idx);
+        if sku.is_empty() {
+            continue;
+        }
+        result.push(ContentRow {
+            sku,
+            title: cell_at(row, title_idx),
+            description: cell_at(row, desc_idx),
+            rich_json: rich_idx.map(|idx| cell_at(row, idx)).unwrap_or_default(),
+        });
+    }
+    Ok(result)
+}
+
+pub fn write_batch_results(path: &Path, rows: &[BatchResultRow]) -> Result<()> {
+    let mut workbook = Workbook::new();
+    let header_format = Format::new()
+        .set_bold()
+        .set_background_color(Color::RGB(0xEAF3FF));
+    let error_format = Format::new()
+        .set_text_wrap()
+        .set_background_color(Color::RGB(0xFFF2F0));
+    let ok_format = Format::new().set_text_wrap();
+    let sheet = workbook.add_worksheet();
+    sheet.set_name("批量处理结果")?;
+    let headers = [
+        "货号",
+        "标题",
+        "图片数量",
+        "状态",
+        "上传成功SKU",
+        "Ozon task_id",
+        "OSS 文件夹",
+        "错误信息",
+    ];
+    for (index, header) in headers.iter().enumerate() {
+        sheet.write_with_format(0, index as u16, *header, &header_format)?;
+    }
+    for (row_index, row) in rows.iter().enumerate() {
+        let r = (row_index + 1) as u32;
+        let format = if row.status == "失败" {
+            &error_format
+        } else {
+            &ok_format
+        };
+        sheet.write_with_format(r, 0, &row.sku, format)?;
+        sheet.write_with_format(r, 1, &row.title, format)?;
+        sheet.write_with_format(r, 2, row.image_count as u32, format)?;
+        sheet.write_with_format(r, 3, &row.status, format)?;
+        sheet.write_with_format(r, 4, &row.uploaded_sku, format)?;
+        sheet.write_with_format(r, 5, &row.task_id, format)?;
+        sheet.write_with_format(r, 6, &row.oss_folder, format)?;
+        sheet.write_with_format(r, 7, &row.error, format)?;
+    }
+    sheet.set_freeze_panes(1, 0)?;
+    for (index, width) in [22.0, 42.0, 12.0, 14.0, 22.0, 24.0, 48.0, 72.0]
+        .iter()
+        .enumerate()
+    {
+        sheet.set_column_width(index as u16, *width)?;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    workbook.save(path)?;
+    Ok(())
+}
+
+pub fn write_status_to_source_excel(path: &Path, results: &[BatchResultRow]) -> Result<()> {
+    let mut workbook_in = open_workbook_auto(path)?;
+    let sheet_name = workbook_in
+        .sheet_names()
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Excel 文件没有工作表"))?;
+    let range = workbook_in.worksheet_range(&sheet_name)?;
+    let mut rows = range
+        .rows()
+        .map(|row| row.iter().map(cell_text).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        anyhow::bail!("Excel 缺少表头");
+    }
+
+    let mut headers = rows[0].clone();
+    for header in [
+        "是否上传成功",
+        "上传成功SKU",
+        "Ozon task_id",
+        "OSS 文件夹",
+        "错误信息",
+    ] {
+        if !headers.iter().any(|value| value == header) {
+            headers.push(header.to_string());
+        }
+    }
+    let sku_idx = optional_header_index(&headers, &["货号", "sku", "offer_id"])
+        .ok_or_else(|| anyhow::anyhow!("Excel 缺少表头: 货号"))?;
+    let success_idx = header_index(&headers, &["是否上传成功"])?;
+    let uploaded_idx = header_index(&headers, &["上传成功SKU"])?;
+    let task_idx = header_index(&headers, &["Ozon task_id"])?;
+    let oss_idx = header_index(&headers, &["OSS 文件夹"])?;
+    let error_idx = header_index(&headers, &["错误信息"])?;
+    rows[0] = headers;
+
+    let result_by_sku = results
+        .iter()
+        .map(|row| (row.sku.trim().to_string(), row))
+        .collect::<std::collections::HashMap<_, _>>();
+    let output_width = rows[0].len();
+    for row in rows.iter_mut().skip(1) {
+        row.resize(output_width, String::new());
+        let sku = row.get(sku_idx).cloned().unwrap_or_default();
+        let Some(result) = result_by_sku.get(sku.trim()) else {
+            continue;
+        };
+        row[success_idx] = if result.status == "已提交" {
+            "是"
+        } else {
+            "否"
+        }
+        .into();
+        row[uploaded_idx] = result.uploaded_sku.clone();
+        row[task_idx] = result.task_id.clone();
+        row[oss_idx] = result.oss_folder.clone();
+        row[error_idx] = result.error.clone();
+    }
+
+    let mut workbook_out = Workbook::new();
+    let header_format = Format::new()
+        .set_bold()
+        .set_background_color(Color::RGB(0xEAF3FF));
+    let wrap = Format::new().set_text_wrap();
+    let sheet = workbook_out.add_worksheet();
+    sheet.set_name(&sheet_name)?;
+    for (row_index, row) in rows.iter().enumerate() {
+        for (col_index, value) in row.iter().enumerate() {
+            if row_index == 0 {
+                sheet.write_with_format(
+                    row_index as u32,
+                    col_index as u16,
+                    value,
+                    &header_format,
+                )?;
+            } else {
+                sheet.write_with_format(row_index as u32, col_index as u16, value, &wrap)?;
+            }
+        }
+    }
+    sheet.set_freeze_panes(1, 0)?;
+    for (index, width) in [20.0, 48.0, 82.0, 36.0, 18.0, 24.0, 24.0, 48.0, 72.0]
+        .iter()
+        .enumerate()
+    {
+        sheet.set_column_width(index as u16, *width)?;
+    }
+    workbook_out.save(path)?;
+    Ok(())
+}
+
+fn header_index(headers: &[String], candidates: &[&str]) -> Result<usize> {
+    optional_header_index(headers, candidates)
+        .ok_or_else(|| anyhow::anyhow!("Excel 缺少表头: {}", candidates[0]))
+}
+
+fn optional_header_index(headers: &[String], candidates: &[&str]) -> Option<usize> {
+    headers.iter().position(|header| {
+        let normalized = header.trim().to_lowercase();
+        candidates
+            .iter()
+            .any(|candidate| normalized == candidate.to_lowercase())
+    })
+}
+
+fn cell_at(row: &[Data], index: usize) -> String {
+    row.get(index).map(cell_text).unwrap_or_default()
+}
+
+fn cell_text(cell: &Data) -> String {
+    match cell {
+        Data::Empty => String::new(),
+        Data::String(value) => value.trim().to_string(),
+        Data::Float(value) if value.fract() == 0.0 => format!("{value:.0}"),
+        Data::Float(value) => value.to_string(),
+        Data::Int(value) => value.to_string(),
+        Data::Bool(value) => value.to_string(),
+        Data::DateTime(value) => value.to_string(),
+        Data::DateTimeIso(value) | Data::DurationIso(value) => value.trim().to_string(),
+        Data::Error(value) => format!("{value:?}"),
+    }
+}

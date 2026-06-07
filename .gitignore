@@ -1,0 +1,9 @@
+node_modules/
+.tooling/
+dist/
+target/
+.DS_Store
+*.log
+*.local
+src-tauri/target/
+fixtures/output/

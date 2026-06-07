@@ -1,0 +1,20 @@
+{
+  "result": {
+    "items": [
+      {
+        "offer_id": "SKU001",
+        "attributes": [
+          {
+            "id": 4191,
+            "name": "Описание",
+            "values": [
+              {
+                "value": "Existing listed description"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "result": {
+    "items": [
+      {
+        "product_id": 1001,
+        "offer_id": "SKU001",
+        "name": "Женский платок квадратный",
+        "description": "Existing listed description",
+        "primary_image": "https://cdn.example.com/sku001/main.jpg",
+        "images": [
+          "https://cdn.example.com/sku001/main.jpg",
+          "https://cdn.example.com/sku001/2.jpg"
+        ],
+        "currency_code": "RUB",
+        "price": "999"
+      }
+    ]
+  }
+}
