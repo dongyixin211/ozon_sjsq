@@ -9,6 +9,8 @@ use std::path::Path;
 pub struct ContentRow {
     pub sku: String,
     pub title: String,
+    pub product_color: String,
+    pub color_name: String,
     pub description: String,
     pub rich_json: String,
 }
@@ -27,6 +29,20 @@ pub struct BatchResultRow {
 }
 
 pub fn create_upload_template(path: &Path) -> Result<()> {
+    write_upload_rows(
+        path,
+        &[ContentRow {
+            sku: "SKU001".into(),
+            title: "2 штуки в упаковке，Повязка на голову женская".into(),
+            product_color: String::new(),
+            color_name: String::new(),
+            description: String::new(),
+            rich_json: String::new(),
+        }],
+    )
+}
+
+pub fn write_upload_rows(path: &Path, rows: &[ContentRow]) -> Result<()> {
     let mut workbook = Workbook::new();
     let header_format = Format::new()
         .set_bold()
@@ -34,56 +50,34 @@ pub fn create_upload_template(path: &Path) -> Result<()> {
     let wrap = Format::new().set_text_wrap();
 
     let sheet = workbook.add_worksheet();
-    sheet.set_name("上架填写")?;
+    sheet.set_name("Sheet1")?;
     let headers = [
         "货号",
         "标题",
-        "简介",
-        "json富文本内容",
-        "是否上传成功",
-        "上传成功SKU",
-        "Ozon task_id",
-        "OSS 文件夹",
-        "错误信息",
+        "商品颜色",
+        "颜色名称(俄语)",
+        "商品ID",
+        "英文标题",
+        "子目录",
     ];
     for (index, header) in headers.iter().enumerate() {
         sheet.write_with_format(0, index as u16, *header, &header_format)?;
     }
-    sheet.write(1, 0, "SKU001")?;
-    sheet.write(1, 1, "Женский платок квадратный с геометрическим принтом")?;
-    sheet.write_with_format(
-        1,
-        2,
-        "Легкий женский платок для повседневного образа. Подходит для прогулок, поездок и сочетания с разной одеждой.",
-        &wrap,
-    )?;
+    for (row_index, row) in rows.iter().enumerate() {
+        let r = (row_index + 1) as u32;
+        sheet.write_with_format(r, 0, &row.sku, &wrap)?;
+        sheet.write_with_format(r, 1, &row.title, &wrap)?;
+        sheet.write_with_format(r, 2, &row.product_color, &wrap)?;
+        sheet.write_with_format(r, 3, &row.color_name, &wrap)?;
+    }
     sheet.set_freeze_panes(1, 0)?;
     sheet.set_column_width(0, 18)?;
     sheet.set_column_width(1, 48)?;
-    sheet.set_column_width(2, 82)?;
-    sheet.set_column_width(3, 36)?;
-    sheet.set_column_width(8, 70)?;
-
-    let guide = workbook.add_worksheet();
-    guide.set_name("填写说明")?;
-    guide.write_with_format(0, 0, "字段", &header_format)?;
-    guide.write_with_format(0, 1, "说明", &header_format)?;
-    let rows = [
-        ("货号", "必须和图片目录下的 SKU 文件夹名完全一致。"),
-        ("标题", "提交给 Ozon 的商品标题。"),
-        ("简介", "提交给 Ozon 的商品描述。"),
-        (
-            "json富文本内容",
-            "可选；填写 Ozon 富内容 JSON 时会替换其中图片 URL。",
-        ),
-        ("Ozon.Video", "可新增同名页签，按货号填写视频链接。"),
-    ];
-    for (row, (field, desc)) in rows.iter().enumerate() {
-        guide.write((row + 1) as u32, 0, *field)?;
-        guide.write((row + 1) as u32, 1, *desc)?;
-    }
-    guide.set_column_width(0, 20)?;
-    guide.set_column_width(1, 90)?;
+    sheet.set_column_width(2, 18)?;
+    sheet.set_column_width(3, 18)?;
+    sheet.set_column_width(4, 18)?;
+    sheet.set_column_width(5, 48)?;
+    sheet.set_column_width(6, 18)?;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -110,7 +104,12 @@ pub fn read_content_rows(path: &Path) -> Result<Vec<ContentRow>> {
 
     let sku_idx = header_index(&headers, &["货号", "sku", "offer_id"])?;
     let title_idx = header_index(&headers, &["标题", "title", "name"])?;
-    let desc_idx = header_index(&headers, &["简介", "描述", "description"])?;
+    let product_color_idx = optional_header_index(&headers, &["商品颜色", "颜色", "product_color"]);
+    let color_name_idx = optional_header_index(
+        &headers,
+        &["颜色名称(俄语)", "颜色名称", "俄语颜色", "color_name", "color_name_ru"],
+    );
+    let desc_idx = optional_header_index(&headers, &["简介", "描述", "description"]);
     let rich_idx = optional_header_index(
         &headers,
         &["json富文本内容", "json富内容", "富文本json", "rich_json"],
@@ -125,7 +124,13 @@ pub fn read_content_rows(path: &Path) -> Result<Vec<ContentRow>> {
         result.push(ContentRow {
             sku,
             title: cell_at(row, title_idx),
-            description: cell_at(row, desc_idx),
+            product_color: product_color_idx
+                .map(|idx| cell_at(row, idx))
+                .unwrap_or_default(),
+            color_name: color_name_idx
+                .map(|idx| cell_at(row, idx))
+                .unwrap_or_default(),
+            description: desc_idx.map(|idx| cell_at(row, idx)).unwrap_or_default(),
             rich_json: rich_idx.map(|idx| cell_at(row, idx)).unwrap_or_default(),
         });
     }
@@ -307,5 +312,54 @@ fn cell_text(cell: &Data) -> String {
         Data::DateTime(value) => value.to_string(),
         Data::DateTimeIso(value) | Data::DurationIso(value) => value.trim().to_string(),
         Data::Error(value) => format!("{value:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_upload_template_matches_simple_five_column_format() {
+        let path = std::env::temp_dir().join(format!(
+            "ozon-upload-template-{}.xlsx",
+            uuid::Uuid::new_v4()
+        ));
+        create_upload_template(&path).unwrap();
+
+        let rows = read_content_rows(&path).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].sku, "SKU001");
+        assert!(!rows[0].title.is_empty());
+        assert!(rows[0].description.is_empty());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn writes_generated_titles_as_upload_excel_rows() {
+        let path =
+            std::env::temp_dir().join(format!("ozon-title-rows-{}.xlsx", uuid::Uuid::new_v4()));
+        write_upload_rows(
+            &path,
+            &[ContentRow {
+                sku: "image-001".into(),
+                title: "Generated title".into(),
+                product_color: "米色".into(),
+                color_name: "бежевый".into(),
+                description: String::new(),
+                rich_json: String::new(),
+            }],
+        )
+        .unwrap();
+
+        let rows = read_content_rows(&path).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].sku, "image-001");
+        assert_eq!(rows[0].title, "Generated title");
+        assert_eq!(rows[0].product_color, "米色");
+        assert_eq!(rows[0].color_name, "бежевый");
+
+        let _ = std::fs::remove_file(path);
     }
 }

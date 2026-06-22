@@ -59,7 +59,7 @@ export function DashboardPage({ shops, jobs, settings, providerSecrets, onNaviga
   const flows = [
     {
       title: "生成素材",
-      detail: "生成 3:4 商品图、水印、AI 图片和文案。",
+      detail: "转 3:4 商品图、水印、AI 标题和图片重命名。",
       ready: hasDefaultDirs,
       action: () => onNavigate(hasDefaultDirs ? "materials" : "settings"),
       actionLabel: hasDefaultDirs ? "开始生成" : "先设目录",

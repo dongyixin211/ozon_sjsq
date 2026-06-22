@@ -418,6 +418,17 @@ impl Database {
     }
 }
 
+fn empty_to_none(value: Option<String>) -> Option<String> {
+    value.and_then(|text| {
+        let trimmed = text.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,15 +456,4 @@ mod tests {
         assert!(db.list_templates("product_import").unwrap().is_empty());
         let _ = std::fs::remove_file(path);
     }
-}
-
-fn empty_to_none(value: Option<String>) -> Option<String> {
-    value.and_then(|text| {
-        let trimmed = text.trim().to_string();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    })
 }

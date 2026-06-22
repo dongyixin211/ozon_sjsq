@@ -71,6 +71,15 @@ pub struct AppSettings {
     pub title_prompt_template: String,
     pub description_prompt_template: String,
     pub selected_template_name: String,
+    pub material_portrait_source_root: String,
+    pub material_portrait_output_root: String,
+    pub material_portrait_max_items: i64,
+    pub material_title_source_root: String,
+    pub material_title_output_root: String,
+    pub material_title_max_items: i64,
+    pub material_rename_source_root: String,
+    pub material_rename_output_root: String,
+    pub material_rename_prefix: String,
 }
 
 impl Default for AppSettings {
@@ -84,9 +93,9 @@ impl Default for AppSettings {
             upload_max_items: 100,
             listed_update_max_workers: 2,
             image_provider: "xiaoqian".into(),
-            text_provider: "wenwen".into(),
+            text_provider: "xiaoqian".into(),
             image_base_url: "https://xiaoqian.art/v1".into(),
-            text_base_url: "https://breakout.wenwen-ai.com/v1".into(),
+            text_base_url: "https://xiaoqian.art/v1".into(),
             image_model: "gpt-image-2".into(),
             text_model: "gpt-5-high".into(),
             max_workers: 3,
@@ -109,6 +118,15 @@ impl Default for AppSettings {
             title_prompt_template: String::new(),
             description_prompt_template: String::new(),
             selected_template_name: String::new(),
+            material_portrait_source_root: String::new(),
+            material_portrait_output_root: String::new(),
+            material_portrait_max_items: 0,
+            material_title_source_root: String::new(),
+            material_title_output_root: String::new(),
+            material_title_max_items: 0,
+            material_rename_source_root: String::new(),
+            material_rename_output_root: String::new(),
+            material_rename_prefix: String::new(),
         }
     }
 }
@@ -220,6 +238,17 @@ pub struct BatchUploadRequest {
     pub max_items: Option<i64>,
     pub upload_template_video: bool,
     pub template_video_links: Vec<String>,
+    #[serde(default)]
+    pub auto_generate_barcode: bool,
+    #[serde(default)]
+    pub auto_update_stock: bool,
+    #[serde(default)]
+    pub auto_add_to_action: bool,
+    pub auto_warehouse_id: Option<i64>,
+    pub auto_stock: Option<i64>,
+    pub auto_action_id: Option<i64>,
+    pub auto_action_price: Option<String>,
+    pub auto_action_stock: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -278,6 +307,21 @@ pub struct MaterialsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ImageRenameRequest {
+    pub source_root: String,
+    pub output_root: String,
+    pub prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageRenameResult {
+    pub count: usize,
+    pub output_root: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalSceneRequest {
     pub source_root: String,
     pub output_root: String,
@@ -304,6 +348,20 @@ pub struct OzonProductRow {
     pub price: Option<String>,
     pub old_price: Option<String>,
     pub currency_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductAnalyticsRow {
+    pub product_id: Option<i64>,
+    pub offer_id: String,
+    pub name: String,
+    pub category_id: Option<i64>,
+    pub category_name: Option<String>,
+    pub type_id: Option<i64>,
+    pub type_name: Option<String>,
+    pub search_views: i64,
+    pub card_views: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -350,10 +408,20 @@ pub struct ImportPreviewInput {
     pub template_product: Value,
     pub offer_id: String,
     pub title: String,
+    pub product_color: String,
+    pub product_color_dictionary_values: Vec<AttributeDictionaryValue>,
+    pub color_name: String,
     pub description: String,
     pub image_urls: Vec<String>,
     pub video_links: Vec<String>,
     pub rich_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttributeDictionaryValue {
+    pub dictionary_value_id: i64,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

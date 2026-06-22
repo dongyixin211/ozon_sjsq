@@ -29,8 +29,9 @@ pub async fn run_order_documents_job(
             jobs.complete_with_result(&job_id, Some(output_root), success_count, failed_count);
         }
         Err(error) => {
-            jobs.log(&job_id, "error", &error.to_string());
-            jobs.fail(&job_id, error.to_string());
+            let message = format!("{error:#}");
+            jobs.log(&job_id, "error", &message);
+            jobs.fail(&job_id, message);
         }
     }
 }
@@ -72,7 +73,7 @@ async fn run_inner(
             Ok(()) => success_count += 1,
             Err(error) => {
                 failed_count += 1;
-                jobs.log(job_id, "error", &format!("{order_ref} 失败：{error}"));
+                jobs.log(job_id, "error", &format!("{order_ref} 失败：{error:#}"));
             }
         }
     }
@@ -103,35 +104,13 @@ async fn process_order_ref(
     }
     let posting_numbers = postings
         .iter()
-        .filter_map(|posting| posting_number_from_posting(posting))
+        .filter_map(posting_number_from_posting)
         .collect::<Vec<_>>();
     if posting_numbers.is_empty() {
         anyhow::bail!("Ozon 返回中缺少 posting_number：{order_ref}");
     }
 
-    if postings.len() == 1 {
-        write_json(&order_dir.join("ozon-posting.json"), &postings[0]).await?;
-    } else {
-        write_json(
-            &order_dir.join("ozon-postings.json"),
-            &Value::Array(postings.clone()),
-        )
-        .await?;
-        for posting in &postings {
-            let posting_number =
-                posting_number_from_posting(posting).unwrap_or_else(|| "posting".into());
-            write_json(
-                &order_dir.join(format!(
-                    "ozon-posting-{}.json",
-                    safe_file_name(&posting_number)
-                )),
-                posting,
-            )
-            .await?;
-        }
-    }
-
-    let seller_web = seller_web_client(request)?;
+    let mut seller_web = seller_web_client(request)?;
     let barcode_pdf = seller_web
         .download_barcode_pdf(&posting_numbers)
         .await
@@ -169,9 +148,6 @@ async fn process_order_ref(
             .with_context(|| format!("保存 Ozon 标签 PDF 失败：{posting_number}"))?;
         }
     }
-
-    let barcodes = merged_barcodes(&postings);
-    write_json(&order_dir.join("ozon-barcodes.json"), &barcodes).await?;
 
     let products = merged_products(&postings);
 
@@ -214,23 +190,17 @@ fn seller_web_client(request: &OrderDocumentsRequest) -> Result<OzonSellerWebCli
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
-    let cookie_path = request
-        .ozon_seller_cookie_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
     let config = ozon_seller_web::config_from_paths(
         request.ozon_company_id.clone().unwrap_or_default(),
         har_path.as_deref(),
-        cookie_path.as_deref(),
+        request.ozon_seller_cookie_path.as_deref(),
     )?;
     OzonSellerWebClient::new(config)
 }
 
 async fn resolve_postings(client: &OzonSellerClient, order_ref: &str) -> Result<Vec<Value>> {
     match client.fbs_posting(order_ref).await {
-        Ok(data) => return Ok(vec![data.get("result").cloned().unwrap_or(data)]),
+        Ok(data) => Ok(vec![data.get("result").cloned().unwrap_or(data)]),
         Err(direct_error) => {
             let data = client
                 .fbs_postings_by_order_ref(order_ref)
@@ -258,18 +228,6 @@ fn posting_number_from_posting(posting: &Value) -> Option<String> {
         .get("posting_number")
         .and_then(Value::as_str)
         .map(str::to_string)
-}
-
-fn merged_barcodes(postings: &[Value]) -> Value {
-    if postings.len() == 1 {
-        return postings[0].get("barcodes").cloned().unwrap_or(Value::Null);
-    }
-    let mut map = serde_json::Map::new();
-    for posting in postings {
-        let key = posting_number_from_posting(posting).unwrap_or_else(|| "posting".into());
-        map.insert(key, posting.get("barcodes").cloned().unwrap_or(Value::Null));
-    }
-    Value::Object(map)
 }
 
 fn merged_products(postings: &[Value]) -> Vec<Value> {
@@ -333,12 +291,6 @@ fn clean_order_numbers(order_numbers: &[String]) -> Vec<String> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty() && seen.insert(value.clone()))
         .collect()
-}
-
-async fn write_json(path: &Path, value: &Value) -> Result<()> {
-    let text = serde_json::to_string_pretty(value)?;
-    fs::write(path, text).await?;
-    Ok(())
 }
 
 fn safe_file_name(value: &str) -> String {

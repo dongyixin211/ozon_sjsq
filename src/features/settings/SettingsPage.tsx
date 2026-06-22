@@ -3,6 +3,11 @@ import type { AppSettings, ProviderSecretStatus, Shop, ShopDraft } from "@shared
 import { api } from "../../lib/api";
 import { PathInput } from "../../lib/PathInput";
 
+const OLLAMA_BASE_URL = "http://localhost:11434/v1";
+const OLLAMA_DEFAULT_MODEL = "qwen3.5:9b";
+const PIXEL_BASE_URL = "https://ai-pixel.online/v1";
+const PIXEL_DEFAULT_MODEL = "gpt-4o-mini";
+
 interface Props {
   settings: AppSettings;
   shops: Shop[];
@@ -27,6 +32,7 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
     enabled: true,
   });
   const [message, setMessage] = useState("");
+  const textProviderIsOllama = localSettings.textProvider.trim().toLowerCase() === "ollama";
 
   useEffect(() => setLocalSettings(settings), [settings]);
 
@@ -58,6 +64,33 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
     setTextApiKey("");
     onChanged();
     setMessage("AI Provider 密钥已保存到系统密钥库。");
+  };
+
+  const useOllamaForTitles = () => {
+    setLocalSettings((current) => ({
+      ...current,
+      textProvider: "ollama",
+      textBaseUrl: OLLAMA_BASE_URL,
+      textModel: current.textProvider.trim().toLowerCase() === "ollama" && current.textModel.trim()
+        ? current.textModel
+        : OLLAMA_DEFAULT_MODEL,
+      generateCopy: true,
+    }));
+    setMessage("已切换文案 Provider 为本地 Ollama，保存设置后生效。");
+  };
+
+  const usePixelForTitles = () => {
+    setLocalSettings((current) => ({
+      ...current,
+      textProvider: "pixel",
+      textBaseUrl: PIXEL_BASE_URL,
+      textModel:
+        current.textProvider.trim().toLowerCase() === "pixel" && current.textModel.trim()
+          ? current.textModel
+          : PIXEL_DEFAULT_MODEL,
+      generateCopy: true,
+    }));
+    setMessage("已切换文案 Provider 为 Pixel 中转，保存设置后生效。");
   };
 
   return (
@@ -273,7 +306,11 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
       {section === "ai" ? <section className="panel">
         <div className="panel-header">
           <h2>AI Provider 设置</h2>
-          <button className="primary-button" onClick={saveSettings}>保存设置</button>
+          <div className="toolbar">
+            <button className="secondary-button" onClick={usePixelForTitles}>使用 Pixel 标题</button>
+            <button className="secondary-button" onClick={useOllamaForTitles}>使用 Ollama 标题</button>
+            <button className="primary-button" onClick={saveSettings}>保存设置</button>
+          </div>
         </div>
         <div className="form-grid">
           <div className="field">
@@ -343,7 +380,7 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
             <h2>AI Provider 密钥</h2>
             <p className="muted">
               图片 Key：{providerSecrets.imageApiKeyStored ? "已保存" : "未保存"}；
-              文案 Key：{providerSecrets.textApiKeyStored ? "已保存" : "未保存"}
+              文案 Key：{textProviderIsOllama ? "Ollama 无需保存" : providerSecrets.textApiKeyStored ? "已保存" : "未保存"}
             </p>
           </div>
           <button className="primary-button" onClick={saveProviderSecrets}>保存密钥</button>
@@ -355,7 +392,13 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
           </div>
           <div className="field">
             <label>文案 API Key</label>
-            <input type="password" value={textApiKey} onChange={(event) => setTextApiKey(event.target.value)} />
+            <input
+              type="password"
+              value={textApiKey}
+              onChange={(event) => setTextApiKey(event.target.value)}
+              disabled={textProviderIsOllama}
+              placeholder={textProviderIsOllama ? "Ollama 无需 API Key" : ""}
+            />
           </div>
         </div>
         <div className="toolbar" style={{ marginTop: 8 }}>

@@ -1,9 +1,13 @@
-use crate::core::models::{CategoryOption, OzonProductRow, WarehouseOption};
+use crate::core::models::{
+    CategoryOption, OzonProductRow, ProductAnalyticsRow, WarehouseOption,
+};
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, HashMap};
 
 const OZON_BASE_URL: &str = "https://api-seller.ozon.ru";
+const MERGE_CARD_ATTRIBUTE_IDS: &[i64] = &[8292, 9048];
 
 #[derive(Clone)]
 pub struct OzonSellerClient {
@@ -103,12 +107,169 @@ impl OzonSellerClient {
             .await
     }
 
+    pub async fn product_analytics(
+        &self,
+        date_from: String,
+        date_to: String,
+        limit: u32,
+    ) -> Result<Vec<ProductAnalyticsRow>> {
+        let data = self
+            .request_json(
+                "/v1/analytics/data",
+                json!({
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "dimension": ["sku"],
+                    "metrics": ["hits_view_search", "hits_view_pdp"],
+                    "filters": [],
+                    "sort": [{"key": "hits_view_pdp", "order": "DESC"}],
+                    "limit": limit.clamp(1, 1000),
+                    "offset": 0
+                }),
+            )
+            .await?;
+        self.enrich_analytics_rows(parse_analytics_rows(&data)).await
+    }
+
+    async fn enrich_analytics_rows(
+        &self,
+        mut rows: Vec<ProductAnalyticsRow>,
+    ) -> Result<Vec<ProductAnalyticsRow>> {
+        let product_ids = rows
+            .iter()
+            .filter_map(|row| row.product_id)
+            .collect::<Vec<_>>();
+        if product_ids.is_empty() {
+            return Ok(rows);
+        }
+
+        let mut details_by_id = HashMap::new();
+        for chunk in product_ids.chunks(100) {
+            let data = self.product_info_by_product_ids(chunk.to_vec()).await?;
+            for item in extract_items(&data) {
+                if let Some(product_id) = item
+                    .get("product_id")
+                    .or_else(|| item.get("id"))
+                    .and_then(value_as_i64)
+                {
+                    details_by_id.insert(product_id, item);
+                }
+            }
+        }
+
+        let offer_ids = details_by_id
+            .values()
+            .filter_map(|item| item.get("offer_id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let mut attributes_by_offer = HashMap::new();
+        for chunk in offer_ids.chunks(100) {
+            let data = self.product_attributes(chunk.to_vec()).await?;
+            for item in extract_items(&data) {
+                let offer_id = item
+                    .get("offer_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if !offer_id.is_empty() {
+                    attributes_by_offer.insert(offer_id, item);
+                }
+            }
+        }
+
+        for row in &mut rows {
+            let Some(product_id) = row.product_id else {
+                continue;
+            };
+            let Some(detail) = details_by_id.get(&product_id) else {
+                continue;
+            };
+            row.offer_id = detail
+                .get("offer_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            row.name = detail
+                .get("name")
+                .or_else(|| detail.get("title"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if let Some(attrs) = attributes_by_offer.get(&row.offer_id) {
+                row.category_id = product_category_id(attrs);
+                row.category_name = attrs
+                    .get("category_name")
+                    .or_else(|| attrs.get("description_category_name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                row.type_id = product_type_id(attrs);
+                row.type_name = attrs
+                    .get("type_name")
+                    .or_else(|| attrs.get("type"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+        }
+        Ok(rows)
+    }
+
     pub async fn product_attributes(&self, offer_ids: Vec<String>) -> Result<Value> {
         self.request_json(
             "/v4/product/info/attributes",
             json!({"filter": {"offer_id": offer_ids}, "limit": 100, "sort_dir": "ASC"}),
         )
         .await
+    }
+
+    pub async fn product_description(&self, offer_id: String) -> Result<Value> {
+        self.request_json(
+            "/v1/product/info/description",
+            json!({ "offer_id": offer_id }),
+        )
+        .await
+    }
+
+    pub async fn attribute_values(
+        &self,
+        description_category_id: i64,
+        type_id: i64,
+        attribute_id: i64,
+    ) -> Result<Vec<Value>> {
+        let mut items = Vec::new();
+        let mut last_value_id = 0i64;
+        loop {
+            let data = self
+                .request_json(
+                    "/v1/description-category/attribute/values",
+                    json!({
+                        "description_category_id": description_category_id,
+                        "type_id": type_id,
+                        "attribute_id": attribute_id,
+                        "language": "DEFAULT",
+                        "limit": 100,
+                        "last_value_id": last_value_id,
+                    }),
+                )
+                .await?;
+            let batch = data
+                .get("result")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if batch.is_empty() {
+                break;
+            }
+            last_value_id = batch
+                .last()
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_i64)
+                .unwrap_or(last_value_id);
+            items.extend(batch);
+            if !data.get("has_next").and_then(Value::as_bool).unwrap_or(false) {
+                break;
+            }
+        }
+        Ok(items)
     }
 
     pub async fn list_products(&self, visibility: &str, limit: u32) -> Result<Vec<OzonProductRow>> {
@@ -118,7 +279,9 @@ impl OzonSellerClient {
                 json!({"filter": {"visibility": visibility}, "last_id": "", "limit": limit.clamp(1, 1000)}),
             )
             .await?;
-        Ok(extract_items(&data).into_iter().map(product_row).collect())
+        let mut rows = extract_items(&data).into_iter().map(product_row).collect::<Vec<_>>();
+        self.attach_product_barcodes(&mut rows).await?;
+        Ok(rows)
     }
 
     pub async fn list_categories(&self) -> Result<Vec<CategoryOption>> {
@@ -137,7 +300,25 @@ impl OzonSellerClient {
         type_id: Option<i64>,
         limit: u32,
     ) -> Result<Vec<OzonProductRow>> {
-        let target_count = limit.clamp(1, 1000) as usize;
+        self.collect_products_by_category(category_id, type_id, Some(limit.clamp(1, 1000) as usize))
+            .await
+    }
+
+    pub async fn list_all_products_by_category(
+        &self,
+        category_id: i64,
+        type_id: Option<i64>,
+    ) -> Result<Vec<OzonProductRow>> {
+        self.collect_products_by_category(category_id, type_id, None)
+            .await
+    }
+
+    async fn collect_products_by_category(
+        &self,
+        category_id: i64,
+        type_id: Option<i64>,
+        target_count: Option<usize>,
+    ) -> Result<Vec<OzonProductRow>> {
         let mut matched_rows = Vec::new();
         let mut last_id = String::new();
 
@@ -159,17 +340,17 @@ impl OzonSellerClient {
             self.attach_product_attributes(&mut rows).await?;
             for row in rows {
                 if row.category_id == Some(category_id)
-                    && type_id.map_or(true, |id| row.type_id == Some(id))
+                    && type_id.is_none_or(|id| row.type_id == Some(id))
                 {
                     matched_rows.push(row);
-                    if matched_rows.len() >= target_count {
+                    if target_count.is_some_and(|count| matched_rows.len() >= count) {
                         break;
                     }
                 }
             }
 
             let next_last_id = extract_last_id(&data).unwrap_or_default();
-            if matched_rows.len() >= target_count
+            if target_count.is_some_and(|count| matched_rows.len() >= count)
                 || next_last_id.trim().is_empty()
                 || next_last_id == last_id
             {
@@ -221,6 +402,48 @@ impl OzonSellerClient {
                     .or_else(|| attrs.get("type"))
                     .and_then(Value::as_str)
                     .map(str::to_string);
+            }
+        }
+        Ok(())
+    }
+
+    async fn attach_product_barcodes(&self, rows: &mut [OzonProductRow]) -> Result<()> {
+        let offer_ids = rows
+            .iter()
+            .map(|row| row.offer_id.clone())
+            .filter(|value| !value.trim().is_empty())
+            .collect::<Vec<_>>();
+        if offer_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut barcodes_by_offer = std::collections::HashMap::new();
+        for chunk in offer_ids.chunks(100) {
+            let data = self.product_info(chunk.to_vec()).await?;
+            for item in extract_items(&data) {
+                let offer_id = item
+                    .get("offer_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if offer_id.is_empty() {
+                    continue;
+                }
+                let has_barcode = item
+                    .get("barcodes")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        items
+                            .iter()
+                            .any(|value| value.as_str().is_some_and(|text| !text.trim().is_empty()))
+                    });
+                barcodes_by_offer.insert(offer_id, has_barcode);
+            }
+        }
+
+        for row in rows {
+            if let Some(has_barcode) = barcodes_by_offer.get(&row.offer_id) {
+                row.has_barcode = Some(*has_barcode);
             }
         }
         Ok(())
@@ -322,6 +545,159 @@ impl OzonSellerClient {
             .await
     }
 
+    pub async fn update_product_attributes(&self, items: Vec<Value>) -> Result<Value> {
+        self.request_json("/v1/product/attributes/update", json!({ "items": items }))
+            .await
+    }
+
+    pub async fn merge_product_cards(
+        &self,
+        product_ids: Vec<i64>,
+        group_size: usize,
+    ) -> Result<Value> {
+        let group_size = group_size.clamp(2, 20);
+        let mut details_by_id = HashMap::new();
+        for chunk in product_ids.chunks(100) {
+            let data = self.product_info_by_product_ids(chunk.to_vec()).await?;
+            for item in extract_items(&data) {
+                if let Some(product_id) = item
+                    .get("product_id")
+                    .or_else(|| item.get("id"))
+                    .and_then(value_as_i64)
+                {
+                    details_by_id.insert(product_id, item);
+                }
+            }
+        }
+
+        let offer_ids = product_ids
+            .iter()
+            .filter_map(|product_id| details_by_id.get(product_id))
+            .filter_map(|item| item.get("offer_id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let mut attributes_by_offer = HashMap::new();
+        for chunk in offer_ids.chunks(100) {
+            let data = self.product_attributes(chunk.to_vec()).await?;
+            for item in extract_items(&data) {
+                let offer_id = item
+                    .get("offer_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if !offer_id.is_empty() {
+                    attributes_by_offer.insert(offer_id, item);
+                }
+            }
+        }
+
+        let mut category_groups: BTreeMap<(i64, i64), Vec<(i64, String, Value)>> =
+            BTreeMap::new();
+        let mut skipped = Vec::new();
+        for product_id in product_ids {
+            let Some(detail) = details_by_id.get(&product_id) else {
+                skipped.push(json!({ "productId": product_id, "reason": "未找到商品详情" }));
+                continue;
+            };
+            let offer_id = detail
+                .get("offer_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let Some(attrs) = attributes_by_offer.get(&offer_id) else {
+                skipped.push(json!({ "productId": product_id, "offerId": offer_id, "reason": "未找到商品属性" }));
+                continue;
+            };
+            let Some(category_id) = product_category_id(attrs) else {
+                skipped.push(json!({ "productId": product_id, "offerId": offer_id, "reason": "缺少类目 ID" }));
+                continue;
+            };
+            let Some(type_id) = product_type_id(attrs) else {
+                skipped.push(json!({ "productId": product_id, "offerId": offer_id, "reason": "缺少类型 ID" }));
+                continue;
+            };
+            category_groups
+                .entry((category_id, type_id))
+                .or_default()
+                .push((product_id, offer_id, attrs.clone()));
+        }
+
+        let timestamp = chrono::Utc::now().timestamp();
+        let mut update_items = Vec::new();
+        let mut groups = Vec::new();
+        for ((category_id, type_id), products) in category_groups {
+            for (index, chunk) in products.chunks(group_size).enumerate() {
+                if chunk.len() < 2 {
+                    let (product_id, offer_id, _) = &chunk[0];
+                    skipped.push(json!({
+                        "productId": product_id,
+                        "offerId": offer_id,
+                        "reason": "同类目剩余商品不足 2 个"
+                    }));
+                    continue;
+                }
+                let group_value =
+                    format!("AUTO-{category_id}-{type_id}-{timestamp}-{}", index + 1);
+                let mut group_product_ids = Vec::new();
+                let mut group_update_items = Vec::new();
+                for (product_id, offer_id, attrs) in chunk {
+                    let attributes = merge_card_attribute_updates(attrs, &group_value);
+                    if attributes.is_empty() {
+                        skipped.push(json!({
+                            "productId": product_id,
+                            "offerId": offer_id,
+                            "reason": "该类目没有可更新的型号属性"
+                        }));
+                        continue;
+                    }
+                    group_update_items.push(json!({
+                        "offer_id": offer_id,
+                        "attributes": attributes
+                    }));
+                    group_product_ids.push(*product_id);
+                }
+                if group_product_ids.len() >= 2 {
+                    update_items.extend(group_update_items);
+                    groups.push(json!({
+                        "categoryId": category_id,
+                        "typeId": type_id,
+                        "groupValue": group_value,
+                        "productIds": group_product_ids
+                    }));
+                } else {
+                    for (product_id, offer_id, _) in chunk {
+                        if group_product_ids.contains(product_id) {
+                            skipped.push(json!({
+                                "productId": product_id,
+                                "offerId": offer_id,
+                                "reason": "同组可更新商品不足 2 个"
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut results = Vec::new();
+        for (index, chunk) in update_items.chunks(100).enumerate() {
+            let data = self.update_product_attributes(chunk.to_vec()).await?;
+            results.push(json!({
+                "batch": index + 1,
+                "count": chunk.len(),
+                "data": data
+            }));
+        }
+
+        Ok(json!({
+            "selected": details_by_id.len(),
+            "updated": update_items.len(),
+            "groupCount": groups.len(),
+            "groups": groups,
+            "skipped": skipped,
+            "results": results
+        }))
+    }
+
     pub async fn fbs_posting(&self, posting_number: &str) -> Result<Value> {
         self.request_json(
             "/v3/posting/fbs/get",
@@ -411,6 +787,23 @@ impl OzonSellerClient {
         .await
     }
 
+    pub async fn action_candidates(
+        &self,
+        action_id: i64,
+        limit: u32,
+        last_id: String,
+    ) -> Result<Value> {
+        self.request_json(
+            "/v1/actions/candidates",
+            json!({
+                "action_id": action_id,
+                "limit": limit.clamp(1, 1000),
+                "last_id": last_id
+            }),
+        )
+        .await
+    }
+
     pub async fn activate_action_products(
         &self,
         action_id: i64,
@@ -433,6 +826,52 @@ impl OzonSellerClient {
             json!({ "action_id": action_id, "product_ids": product_ids }),
         )
         .await
+    }
+
+    pub async fn deactivate_all_action_products(&self, action_id: i64) -> Result<Value> {
+        let mut product_ids = Vec::new();
+        let mut last_id = String::new();
+
+        loop {
+            let data = self
+                .action_products(action_id, 1000, last_id.clone())
+                .await?;
+            let ids = extract_items(&data)
+                .iter()
+                .filter_map(action_product_id)
+                .collect::<Vec<_>>();
+            product_ids.extend(ids);
+
+            let next_last_id = extract_last_id(&data).unwrap_or_default();
+            if next_last_id.trim().is_empty() || next_last_id == last_id {
+                break;
+            }
+            last_id = next_last_id;
+        }
+
+        product_ids.sort_unstable();
+        product_ids.dedup();
+        if product_ids.is_empty() {
+            return Ok(json!({
+                "total": 0,
+                "batches": 0,
+                "results": [],
+            }));
+        }
+
+        let mut results = Vec::new();
+        for (index, chunk) in product_ids.chunks(100).enumerate() {
+            let data = self
+                .deactivate_action_products(action_id, chunk.to_vec())
+                .await?;
+            results.push(json!({ "batch": index + 1, "count": chunk.len(), "data": data }));
+        }
+
+        Ok(json!({
+            "total": product_ids.len(),
+            "batches": results.len(),
+            "results": results,
+        }))
     }
 }
 
@@ -612,11 +1051,118 @@ fn extract_last_id(data: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn action_product_id(item: &Value) -> Option<i64> {
+    item.get("product_id")
+        .or_else(|| item.get("productId"))
+        .or_else(|| item.get("id"))
+        .and_then(value_as_i64)
+}
+
 fn extract_price_value(item: &Value, key: &str) -> Option<String> {
     item.get(key).and_then(scalar_to_string).or_else(|| {
         item.pointer(&format!("/price/{key}"))
             .and_then(scalar_to_string)
     })
+}
+
+fn parse_analytics_rows(data: &Value) -> Vec<ProductAnalyticsRow> {
+    data.pointer("/result/data")
+        .or_else(|| data.get("data"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let product_id = item
+                .get("dimensions")
+                .and_then(Value::as_array)
+                .and_then(|dimensions| dimensions.first())
+                .and_then(|dimension| {
+                    dimension
+                        .get("id")
+                        .or_else(|| dimension.get("value"))
+                        .and_then(value_as_i64)
+                });
+            product_id.map(|product_id| ProductAnalyticsRow {
+                product_id: Some(product_id),
+                offer_id: String::new(),
+                name: String::new(),
+                category_id: None,
+                category_name: None,
+                type_id: None,
+                type_name: None,
+                search_views: analytics_metric(item, "hits_view_search", 0),
+                card_views: analytics_metric(item, "hits_view_pdp", 1),
+            })
+        })
+        .collect()
+}
+
+fn analytics_metric(item: &Value, key: &str, index: usize) -> i64 {
+    item.get(key)
+        .and_then(metric_as_i64)
+        .or_else(|| {
+            item.get("metrics")
+                .and_then(Value::as_array)
+                .and_then(|metrics| metrics.get(index))
+                .and_then(metric_as_i64)
+        })
+        .unwrap_or_default()
+}
+
+fn metric_as_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|number| number.round() as i64))
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|text| text.parse::<f64>().ok())
+                .map(|number| number.round() as i64)
+        })
+}
+
+fn merge_card_attribute_updates(item: &Value, group_value: &str) -> Vec<Value> {
+    item.get("attributes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|attribute| is_merge_card_attribute(attribute))
+        .filter_map(|attribute| {
+            let id = attribute
+                .get("id")
+                .or_else(|| attribute.get("attribute_id"))
+                .and_then(value_as_i64)?;
+            let mut update = serde_json::Map::new();
+            update.insert("id".into(), json!(id));
+            if let Some(complex_id) = attribute.get("complex_id").and_then(value_as_i64) {
+                update.insert("complex_id".into(), json!(complex_id));
+            }
+            update.insert(
+                "values".into(),
+                json!([{ "dictionary_value_id": 0, "value": group_value }]),
+            );
+            Some(Value::Object(update))
+        })
+        .collect()
+}
+
+fn is_merge_card_attribute(attribute: &Value) -> bool {
+    let attr_id = attribute
+        .get("id")
+        .or_else(|| attribute.get("attribute_id"))
+        .and_then(value_as_i64);
+    if attr_id.is_some_and(|id| MERGE_CARD_ATTRIBUTE_IDS.contains(&id)) {
+        return true;
+    }
+    let names = ["name", "attribute_name", "title"]
+        .iter()
+        .filter_map(|key| attribute.get(*key).and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    ["merge", "combine", "объедин", "合并", "型号", "модель"]
+        .iter()
+        .any(|marker| names.contains(marker))
 }
 
 fn scalar_to_string(value: &Value) -> Option<String> {
@@ -638,7 +1184,7 @@ fn parse_warehouses(data: &Value) -> Vec<WarehouseOption> {
                 .and_then(Value::as_array)
                 .cloned()
         })
-        .unwrap_or_else(|| extract_items(&data));
+        .unwrap_or_else(|| extract_items(data));
     for item in items {
         let warehouse_id = item
             .get("warehouse_id")
@@ -926,6 +1472,41 @@ mod tests {
         let data = json!({"result": {"last_id": "next-page"}});
 
         assert_eq!(extract_last_id(&data).as_deref(), Some("next-page"));
+    }
+
+    #[test]
+    fn parses_analytics_metrics_and_product_id() {
+        let rows = parse_analytics_rows(&json!({
+            "result": {
+                "data": [{
+                    "dimensions": [{"id": "12345", "name": "商品"}],
+                    "metrics": [17, 42]
+                }]
+            }
+        }));
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].product_id, Some(12345));
+        assert_eq!(rows[0].search_views, 17);
+        assert_eq!(rows[0].card_views, 42);
+    }
+
+    #[test]
+    fn builds_only_merge_card_attribute_updates() {
+        let updates = merge_card_attribute_updates(
+            &json!({
+                "attributes": [
+                    {"id": 9048, "name": "Название модели", "values": [{"value": "OLD"}]},
+                    {"id": 10096, "name": "Цвет", "values": [{"value": "black"}]}
+                ]
+            }),
+            "AUTO-GROUP",
+        );
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0]["id"], 9048);
+        assert_eq!(updates[0]["values"][0]["value"], "AUTO-GROUP");
+        assert!(updates[0].get("name").is_none());
     }
 
     #[test]

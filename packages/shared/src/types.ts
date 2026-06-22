@@ -75,6 +75,15 @@ export interface AppSettings {
   titlePromptTemplate: string;
   descriptionPromptTemplate: string;
   selectedTemplateName: string;
+  materialPortraitSourceRoot: string;
+  materialPortraitOutputRoot: string;
+  materialPortraitMaxItems: number;
+  materialTitleSourceRoot: string;
+  materialTitleOutputRoot: string;
+  materialTitleMaxItems: number;
+  materialRenameSourceRoot: string;
+  materialRenameOutputRoot: string;
+  materialRenamePrefix: string;
 }
 
 export interface ProviderSecretStatus {
@@ -145,6 +154,11 @@ export interface OzonProductRow {
   currencyCode?: string;
 }
 
+export interface ProductAnalyticsRow extends OzonProductRow {
+  searchViews: number;
+  cardViews: number;
+}
+
 export interface WarehouseOption {
   warehouseId: number;
   name: string;
@@ -194,6 +208,14 @@ export interface BatchUploadRequest {
   maxItems?: number;
   uploadTemplateVideo: boolean;
   templateVideoLinks: string[];
+  autoGenerateBarcode: boolean;
+  autoUpdateStock: boolean;
+  autoAddToAction: boolean;
+  autoWarehouseId?: number;
+  autoStock?: number;
+  autoActionId?: number;
+  autoActionPrice?: string;
+  autoActionStock?: number;
 }
 
 export interface ListedUpdateRequest {
@@ -242,6 +264,17 @@ export interface MaterialsRequest {
   generateCopy: boolean;
   exportExcel: boolean;
   maxItems?: number;
+}
+
+export interface ImageRenameRequest {
+  sourceRoot: string;
+  outputRoot: string;
+  prefix: string;
+}
+
+export interface ImageRenameResult {
+  count: number;
+  outputRoot: string;
 }
 
 export interface LocalSceneRequest {

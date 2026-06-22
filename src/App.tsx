@@ -49,6 +49,16 @@ export function App() {
     [snapshot],
   );
 
+  useEffect(() => {
+    if (runningCount === 0) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      refresh().catch((error) => setMessage(String(error)));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [runningCount]);
+
   const shops = snapshot?.shops ?? [];
   const jobs = snapshot?.jobs ?? [];
   const settings = snapshot?.settings;
@@ -110,7 +120,7 @@ export function App() {
             }}
           />
         )}
-        {page === "materials" && settings && <MaterialsPage settings={settings} onJobStarted={refresh} onNavigate={setPage} />}
+        {page === "materials" && settings && <MaterialsPage settings={settings} onChanged={refresh} onJobStarted={refresh} onNavigate={setPage} />}
         {page === "scene" && <ScenePage onJobStarted={refresh} />}
         {page === "ozon" && settings && <OzonPage shops={shops} settings={settings} onChanged={refresh} onNavigate={setPage} />}
         {page === "jobs" && <JobsPage jobs={jobs} selectedJobId={selectedJobId} onChanged={refresh} />}

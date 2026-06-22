@@ -3,6 +3,7 @@ import { FolderOpen } from "lucide-react";
 import type { JobLog, JobSummary } from "@shared/types";
 import { api } from "../../lib/api";
 import { formatDate, jobKindText, statusText } from "../../lib/format";
+import { LongOutput } from "../../lib/LongOutput";
 
 interface Props {
   jobs: JobSummary[];
@@ -12,26 +13,47 @@ interface Props {
 
 export function JobsPage({ jobs, selectedJobId, onChanged }: Props) {
   const [logs, setLogs] = useState<JobLog[]>([]);
-  const [selectedJob, setSelectedJob] = useState<string>(selectedJobId || jobs[0]?.id || "");
+  const [selectedJob, setSelectedJob] = useState<string>(selectedJobId || "");
+  const [loadedLogJob, setLoadedLogJob] = useState("");
   const [logPage, setLogPage] = useState(1);
   const [logPageSize, setLogPageSize] = useState(10);
 
   const openLogs = async (jobId: string) => {
     setSelectedJob(jobId);
+    setLoadedLogJob(jobId);
     setLogs(await api.listJobLogs(jobId));
     setLogPage(1);
   };
 
   useEffect(() => {
-    const next = selectedJobId || selectedJob || jobs[0]?.id || "";
-    if (next) {
-      openLogs(next).catch(() => undefined);
+    const jobIds = new Set(jobs.map((job) => job.id));
+    const selectedStillExists = selectedJob && jobIds.has(selectedJob);
+    const nextJob = selectedJobId || (selectedStillExists ? selectedJob : jobs[0]?.id ?? "");
+    if (!nextJob) {
+      setSelectedJob("");
+      setLoadedLogJob("");
+      setLogs([]);
+      return;
     }
-  }, [selectedJobId, jobs]);
+    if (nextJob !== selectedJob || nextJob !== loadedLogJob) {
+      openLogs(nextJob).catch(() => undefined);
+    }
+  }, [jobs, selectedJob, selectedJobId, loadedLogJob]);
+
+  useEffect(() => {
+    if (!selectedJob) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      api.listJobLogs(selectedJob).then(setLogs).catch(() => undefined);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [selectedJob]);
 
   const totalLogPages = Math.max(1, Math.ceil(logs.length / Math.max(1, logPageSize)));
   const currentLogPage = Math.min(logPage, totalLogPages);
   const pagedLogs = logs.slice((currentLogPage - 1) * logPageSize, currentLogPage * logPageSize);
+  const logText = pagedLogs.map((log) => `[${formatDate(log.createdAt)}] ${log.level.toUpperCase()} ${log.message}`).join("\n");
 
   return (
     <div className="content-grid">
@@ -126,11 +148,7 @@ export function JobsPage({ jobs, selectedJobId, onChanged }: Props) {
             <button className="secondary-button" disabled={currentLogPage >= totalLogPages} onClick={() => setLogPage(totalLogPages)}>末页</button>
           </div>
         </div>
-        <pre className="log-box">
-          {pagedLogs.length
-            ? pagedLogs.map((log) => `[${formatDate(log.createdAt)}] ${log.level.toUpperCase()} ${log.message}`).join("\n")
-            : "选择任务后查看日志。"}
-        </pre>
+        <LongOutput value={logText} emptyText="选择任务后查看日志。" maxHeight={160} />
       </section>
     </div>
   );

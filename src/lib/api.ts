@@ -3,6 +3,8 @@ import type {
   AppSettings,
   BatchUploadRequest,
   CategoryOption,
+  ImageRenameRequest,
+  ImageRenameResult,
   JobKind,
   JobLog,
   JobSummary,
@@ -12,6 +14,7 @@ import type {
   OrderDocumentsRequest,
   OzonProductRow,
   PreflightIssue,
+  ProductAnalyticsRow,
   ProviderSecretDraft,
   ProviderSecretStatus,
   Shop,
@@ -28,6 +31,19 @@ export interface AppSnapshot {
   providerSecrets: ProviderSecretStatus;
 }
 
+export interface UpdateCategoryProductsRequest {
+  shopId: string;
+  categoryId: number;
+  typeId?: number;
+  warehouseId?: number;
+  stock?: number;
+  price?: string;
+  oldPrice?: string;
+  currencyCode?: string;
+  updateStock: boolean;
+  updatePrice: boolean;
+}
+
 const defaultSettings: AppSettings = {
   defaultSourceRoot: "",
   defaultOutputRoot: "",
@@ -37,9 +53,9 @@ const defaultSettings: AppSettings = {
   uploadMaxItems: 100,
   listedUpdateMaxWorkers: 2,
   imageProvider: "xiaoqian",
-  textProvider: "wenwen",
+  textProvider: "xiaoqian",
   imageBaseUrl: "https://xiaoqian.art/v1",
-  textBaseUrl: "https://breakout.wenwen-ai.com/v1",
+  textBaseUrl: "https://xiaoqian.art/v1",
   imageModel: "gpt-image-2",
   textModel: "gpt-5-high",
   maxWorkers: 3,
@@ -62,6 +78,15 @@ const defaultSettings: AppSettings = {
   titlePromptTemplate: "",
   descriptionPromptTemplate: "",
   selectedTemplateName: "",
+  materialPortraitSourceRoot: "",
+  materialPortraitOutputRoot: "",
+  materialPortraitMaxItems: 0,
+  materialTitleSourceRoot: "",
+  materialTitleOutputRoot: "",
+  materialTitleMaxItems: 0,
+  materialRenameSourceRoot: "",
+  materialRenameOutputRoot: "",
+  materialRenamePrefix: "",
 };
 
 const mockJobs: JobSummary[] = [
@@ -99,6 +124,11 @@ export const api = {
     call<ProviderSecretStatus>("save_provider_secrets", { settings, draft }, () => ({
       imageApiKeyStored: Boolean(draft.imageApiKey),
       textApiKeyStored: Boolean(draft.textApiKey),
+    })),
+  saveXiaoqianApiKey: (apiKey: string) =>
+    call<ProviderSecretStatus>("save_xiaoqian_api_key", { apiKey }, () => ({
+      imageApiKeyStored: Boolean(apiKey.trim()),
+      textApiKeyStored: Boolean(apiKey.trim()),
     })),
   saveShop: (draft: ShopDraft) =>
     call<Shop>("save_shop", { draft }, () => ({
@@ -172,6 +202,30 @@ export const api = {
         },
       ],
     ),
+  listProductAnalytics: (shopId: string, dateFrom: string, dateTo: string, limit?: number) =>
+    call<ProductAnalyticsRow[]>(
+      "list_product_analytics",
+      { shopId, dateFrom, dateTo, limit: limit ?? 1000 },
+      () => [
+        {
+          productId: 1001,
+          offerId: "SKU001",
+          name: "示例高浏览商品",
+          categoryId: 17028924,
+          categoryName: "发饰",
+          typeId: 17028925,
+          typeName: "束发带",
+          searchViews: 120,
+          cardViews: 80,
+        },
+      ],
+    ),
+  mergeProductCards: (shopId: string, productIds: number[]) =>
+    call<unknown>(
+      "merge_product_cards",
+      { shopId, productIds },
+      () => ({ selected: productIds.length, updated: productIds.length, groupCount: Math.ceil(productIds.length / 20) }),
+    ),
   getProductInfo: (shopId: string, offerIds: string[]) =>
     call<unknown>("get_product_info", { shopId, offerIds }, () => ({ result: { items: [] } })),
   getProductInfoByProductIds: (shopId: string, productIds: number[]) =>
@@ -189,6 +243,8 @@ export const api = {
     })),
   getProductAttributes: (shopId: string, offerIds: string[]) =>
     call<unknown>("get_product_attributes", { shopId, offerIds }, () => ({ result: [] })),
+  getProductDescription: (shopId: string, offerId: string) =>
+    call<unknown>("get_product_description", { shopId, offerId }, () => ({ result: {} })),
   getProductStocks: (shopId: string, productIds: number[]) =>
     call<unknown>("get_product_stocks", { shopId, productIds }, () => ({ result: { items: [] } })),
   importProducts: (shopId: string, items: unknown[]) =>
@@ -205,10 +261,18 @@ export const api = {
       { shopId, actionId, limit: limit ?? 100, lastId: lastId ?? "" },
       () => ({ result: { products: [], last_id: "" } }),
     ),
+  listActionCandidates: (shopId: string, actionId: number, limit?: number, lastId?: string) =>
+    call<unknown>(
+      "list_action_candidates",
+      { shopId, actionId, limit: limit ?? 100, lastId: lastId ?? "" },
+      () => ({ result: { products: [], total: 0 } }),
+    ),
   activateActionProducts: (shopId: string, actionId: number, products: unknown[]) =>
     call<unknown>("activate_action_products", { shopId, actionId, products }, () => ({ result: products })),
   deactivateActionProducts: (shopId: string, actionId: number, productIds: number[]) =>
     call<unknown>("deactivate_action_products", { shopId, actionId, productIds }, () => ({ result: productIds })),
+  deactivateAllActionProducts: (shopId: string, actionId: number) =>
+    call<unknown>("deactivate_all_action_products", { shopId, actionId }, () => ({ total: 0, batches: 0, results: [] })),
   buildImportPreview: (input: {
     templateProduct: unknown;
     offerId: string;
@@ -234,6 +298,29 @@ export const api = {
     call<unknown>("update_stocks", { shopId, stocks }, () => ({ result: stocks.map((stock) => ({ ...stock, updated: true })) })),
   updatePrices: (shopId: string, prices: Array<Record<string, unknown>>) =>
     call<unknown>("update_prices", { shopId, prices }, () => ({ result: prices.map((price) => ({ ...price, updated: true })) })),
+  updateCategoryProducts: (request: UpdateCategoryProductsRequest) =>
+    call<unknown>(
+      "update_category_products",
+      {
+        shopId: request.shopId,
+        categoryId: request.categoryId,
+        typeId: request.typeId,
+        warehouseId: request.warehouseId,
+        stock: request.stock,
+        price: request.price,
+        oldPrice: request.oldPrice,
+        currencyCode: request.currencyCode,
+        updateStock: request.updateStock,
+        updatePrice: request.updatePrice,
+      },
+      () => ({
+        total: 1,
+        stockUpdated: request.updateStock,
+        priceUpdated: request.updatePrice,
+        stockBatches: request.updateStock ? 1 : 0,
+        priceBatches: request.updatePrice ? 1 : 0,
+      }),
+    ),
   generateBarcodes: (shopId: string, productIds: number[]) =>
     call<unknown>("generate_barcodes", { shopId, productIds }, () => ({ result: productIds.map((productId) => ({ productId })) })),
   startDemoJob: (kind: JobKind, title: string) =>
@@ -296,6 +383,13 @@ export const api = {
     call<PreflightIssue[]>("preflight_materials", { request }, () => [
       { level: "info", scope: "预检查", message: "浏览器预览模式：桌面端会检查目录、AI Key 和预计处理量。" },
     ]),
+  listAiModels: (baseUrl: string, provider: string) =>
+    call<string[]>("list_ai_models", { baseUrl, provider }, () => [defaultSettings.textModel]),
+  renameMaterialImages: (request: ImageRenameRequest) =>
+    call<ImageRenameResult>("rename_material_images", { request }, () => ({
+      count: 0,
+      outputRoot: request.outputRoot,
+    })),
   preflightBatchUpload: (request: BatchUploadRequest) =>
     call<PreflightIssue[]>("preflight_batch_upload", { request }, () => [
       { level: "info", scope: "预检查", message: "浏览器预览模式：桌面端会检查店铺、OSS、Excel 和 SKU 图片匹配。" },
