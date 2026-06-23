@@ -30,6 +30,10 @@ pub struct BaiduPanOptions {
     pub recursive: bool,
 }
 
+pub fn validate_cookie(cookie: &str) -> Result<()> {
+    parse_cookies(cookie).map(|_| ())
+}
+
 pub async fn download_images(
     options: BaiduPanOptions,
     names: &[String],
@@ -404,7 +408,10 @@ fn parse_cookies(cookie: &str) -> Result<HashMap<String, String>> {
         };
         cookies.insert(key.trim().to_string(), value.trim().to_string());
     }
-    if !cookies.contains_key("BDUSS") {
+    if !cookies
+        .get("BDUSS")
+        .is_some_and(|value| !value.trim().is_empty())
+    {
         anyhow::bail!("Cookie 中缺少 BDUSS");
     }
     Ok(cookies)
@@ -488,5 +495,12 @@ mod tests {
             item_filename(&json!({"filename": "B.jpg"})).as_deref(),
             Some("B.jpg")
         );
+    }
+
+    #[test]
+    fn validates_required_baidu_cookie() {
+        assert!(validate_cookie("BDUSS=token; STOKEN=other").is_ok());
+        assert!(validate_cookie("STOKEN=other").is_err());
+        assert!(validate_cookie("BDUSS= ; STOKEN=other").is_err());
     }
 }

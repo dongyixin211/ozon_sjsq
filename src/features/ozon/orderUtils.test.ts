@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOrderNumbers } from "./orderUtils";
+import { hasBaiduBdussCookie, parseOrderNumbers } from "./orderUtils";
 
 describe("Ozon order utilities", () => {
   it("splits pasted order numbers and removes duplicates", () => {
@@ -12,5 +12,11 @@ describe("Ozon order utilities", () => {
 
   it("ignores empty separators", () => {
     expect(parseOrderNumbers(" ,， ;； \n ")).toEqual([]);
+  });
+
+  it("requires a non-empty BDUSS cookie", () => {
+    expect(hasBaiduBdussCookie("BDUSS=token; STOKEN=other")).toBe(true);
+    expect(hasBaiduBdussCookie("STOKEN=other")).toBe(false);
+    expect(hasBaiduBdussCookie("BDUSS= ; STOKEN=other")).toBe(false);
   });
 });

@@ -36,20 +36,35 @@ pub async fn run_order_documents_job(
     }
 }
 
+pub fn validate_request(request: &OrderDocumentsRequest) -> Result<()> {
+    if clean_order_numbers(&request.order_numbers).is_empty() {
+        anyhow::bail!("请至少输入一个订单/货件编号");
+    }
+    if request.output_root.trim().is_empty() {
+        anyhow::bail!("请选择输出目录");
+    }
+    seller_web_client(request)?;
+    if request.download_materials {
+        let cookie = request
+            .baidu_cookie
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("请先填写百度网盘 Cookie")?;
+        baidu_pan::validate_cookie(cookie)?;
+    }
+    Ok(())
+}
+
 async fn run_inner(
     jobs: &JobRegistry,
     job_id: &str,
     request: OrderDocumentsRequest,
     client: OzonSellerClient,
 ) -> Result<(String, usize, usize)> {
+    validate_request(&request)?;
     let order_numbers = clean_order_numbers(&request.order_numbers);
-    if order_numbers.is_empty() {
-        anyhow::bail!("请至少输入一个订单/货件编号");
-    }
     let output_root = PathBuf::from(request.output_root.trim());
-    if output_root.as_os_str().is_empty() {
-        anyhow::bail!("请选择输出目录");
-    }
     fs::create_dir_all(&output_root)
         .await
         .with_context(|| format!("创建输出目录失败：{}", output_root.display()))?;
@@ -369,5 +384,40 @@ mod tests {
         };
         assert!(ensure_baidu_download_complete(&failed, 3).is_err());
         assert!(ensure_baidu_download_complete(&ok, 4).is_err());
+    }
+
+    #[test]
+    fn validates_order_document_request_before_starting_job() {
+        let mut request = valid_request();
+        assert!(validate_request(&request).is_ok());
+
+        request.order_numbers.clear();
+        assert_eq!(
+            validate_request(&request).unwrap_err().to_string(),
+            "请至少输入一个订单/货件编号"
+        );
+
+        let mut request = valid_request();
+        request.download_materials = true;
+        request.baidu_cookie = Some("STOKEN=missing-bduss".into());
+        assert_eq!(
+            validate_request(&request).unwrap_err().to_string(),
+            "Cookie 中缺少 BDUSS"
+        );
+    }
+
+    fn valid_request() -> OrderDocumentsRequest {
+        OrderDocumentsRequest {
+            shop_id: "shop".into(),
+            order_numbers: vec!["123-1".into()],
+            output_root: "/tmp/orders".into(),
+            ozon_company_id: Some("company".into()),
+            ozon_seller_har_path: None,
+            ozon_seller_cookie_path: Some("session=value".into()),
+            baidu_cookie: None,
+            baidu_search_dir: None,
+            baidu_recursive: true,
+            download_materials: false,
+        }
     }
 }

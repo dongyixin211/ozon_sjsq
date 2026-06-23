@@ -931,6 +931,7 @@ pub fn start_order_documents(
             .map_err(|_| "数据库状态锁定失败".to_string())?;
         request.ozon_company_id = Some(db.get_shop(&request.shop_id).map_err(to_string)?.client_id);
     }
+    order_docs::validate_request(&request).map_err(to_string)?;
     let job = state.jobs.create_job(
         JobKind::OrderDocuments,
         "订单文件下载".into(),

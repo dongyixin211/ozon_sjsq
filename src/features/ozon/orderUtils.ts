@@ -9,3 +9,10 @@ export function parseOrderNumbers(value: string): string[] {
       return true;
     });
 }
+
+export function hasBaiduBdussCookie(value: string): boolean {
+  return value.split(";").some((part) => {
+    const [key, ...rest] = part.trim().split("=");
+    return key.trim() === "BDUSS" && rest.join("=").trim().length > 0;
+  });
+}

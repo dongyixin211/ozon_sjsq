@@ -6,7 +6,7 @@ import { LongOutput } from "../../lib/LongOutput";
 import { hasBlockingIssues, PreflightPanel } from "../../lib/PreflightPanel";
 import { buildActionProductPayload, extractNextLastId } from "./actionUtils";
 import { selectInventoryProducts } from "./inventoryUtils";
-import { parseOrderNumbers } from "./orderUtils";
+import { hasBaiduBdussCookie, parseOrderNumbers } from "./orderUtils";
 
 interface Props {
   shops: Shop[];
@@ -521,6 +521,7 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
   const saveBaiduCookie = async () => {
     const cookie = baiduCookie.trim();
     if (!cookie) throw new Error("请先填写百度网盘 Cookie");
+    if (!hasBaiduBdussCookie(cookie)) throw new Error("百度网盘 Cookie 中缺少有效 BDUSS");
     const saved = await api.saveSettings({ ...settings, baiduCookie: cookie });
     setBaiduCookie(saved.baiduCookie);
     onChanged();
