@@ -3,7 +3,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 
@@ -28,23 +28,6 @@ pub struct BaiduPanOptions {
     pub cookie: String,
     pub search_dir: String,
     pub recursive: bool,
-}
-
-pub fn load_cookie_from_config(path: &Path) -> Result<String> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("读取百度网盘配置失败：{}", path.display()))?;
-    let value: Value = serde_json::from_str(&text)
-        .with_context(|| format!("百度网盘配置不是合法 JSON：{}", path.display()))?;
-    let cookie = value
-        .get("cookies")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if !cookie.contains("BDUSS=") {
-        anyhow::bail!("百度网盘配置中没有有效 BDUSS Cookie：{}", path.display());
-    }
-    Ok(cookie)
 }
 
 pub async fn download_images(
@@ -473,10 +456,6 @@ fn now_seconds() -> u64 {
 
 fn browser_ua() -> &'static str {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
-
-pub fn default_config_path() -> PathBuf {
-    PathBuf::from("/Users/a18338062216/Documents/tool/baidu-pan-image-downloader/config.json")
 }
 
 #[cfg(test)]

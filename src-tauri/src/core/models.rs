@@ -40,6 +40,7 @@ pub struct ShopDraft {
 pub struct AppSettings {
     pub default_source_root: String,
     pub default_output_root: String,
+    pub baidu_cookie: String,
     pub watermark_path: String,
     pub content_root: String,
     pub upload_excel_path: String,
@@ -87,6 +88,7 @@ impl Default for AppSettings {
         Self {
             default_source_root: String::new(),
             default_output_root: String::new(),
+            baidu_cookie: String::new(),
             watermark_path: String::new(),
             content_root: String::new(),
             upload_excel_path: String::new(),
@@ -276,7 +278,7 @@ pub struct OrderDocumentsRequest {
     pub ozon_company_id: Option<String>,
     pub ozon_seller_har_path: Option<String>,
     pub ozon_seller_cookie_path: Option<String>,
-    pub baidu_cookie_path: Option<String>,
+    pub baidu_cookie: Option<String>,
     pub baidu_search_dir: Option<String>,
     pub baidu_recursive: bool,
     pub download_materials: bool,

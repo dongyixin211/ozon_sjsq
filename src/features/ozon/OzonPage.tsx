@@ -5,6 +5,8 @@ import { PathInput } from "../../lib/PathInput";
 import { LongOutput } from "../../lib/LongOutput";
 import { hasBlockingIssues, PreflightPanel } from "../../lib/PreflightPanel";
 import { buildActionProductPayload, extractNextLastId } from "./actionUtils";
+import { selectInventoryProducts } from "./inventoryUtils";
+import { parseOrderNumbers } from "./orderUtils";
 
 interface Props {
   shops: Shop[];
@@ -60,7 +62,11 @@ interface CacheEntry<T> {
 interface OrderDocumentsDraft {
   orderNumbersText?: string;
   orderOutputRoot?: string;
+  ozonSellerHarPath?: string;
   ozonSellerCookiePath?: string;
+  baiduSearchDir?: string;
+  baiduRecursive?: boolean;
+  downloadMaterials?: boolean;
 }
 
 interface ListedUpdateDraft {
@@ -181,12 +187,12 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
   const [updateRichJson, setUpdateRichJson] = useState(savedUpdateDraft.updateRichJson ?? false);
   const [orderNumbersText, setOrderNumbersText] = useState(savedOrderDraft.orderNumbersText ?? "");
   const [orderOutputRoot, setOrderOutputRoot] = useState(savedOrderDraft.orderOutputRoot ?? settings.defaultOutputRoot);
-  const [ozonSellerHarPath, setOzonSellerHarPath] = useState("/Users/a18338062216/Downloads/seller.ozon.ru.har");
+  const [ozonSellerHarPath, setOzonSellerHarPath] = useState(savedOrderDraft.ozonSellerHarPath ?? "");
   const [ozonSellerCookiePath, setOzonSellerCookiePath] = useState(savedOrderDraft.ozonSellerCookiePath ?? "");
-  const [baiduCookiePath, setBaiduCookiePath] = useState("/Users/a18338062216/Documents/tool/baidu-pan-image-downloader/config.json");
-  const [baiduSearchDir, setBaiduSearchDir] = useState("/");
-  const [baiduRecursive, setBaiduRecursive] = useState(true);
-  const [downloadMaterials, setDownloadMaterials] = useState(true);
+  const [baiduCookie, setBaiduCookie] = useState(settings.baiduCookie);
+  const [baiduSearchDir, setBaiduSearchDir] = useState(savedOrderDraft.baiduSearchDir ?? "/");
+  const [baiduRecursive, setBaiduRecursive] = useState(savedOrderDraft.baiduRecursive ?? true);
+  const [downloadMaterials, setDownloadMaterials] = useState(savedOrderDraft.downloadMaterials ?? false);
   const [products, setProducts] = useState<OzonProductRow[]>([]);
   const [inventoryMode, setInventoryMode] = useState<InventoryMode>("products");
   const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
@@ -270,12 +276,12 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
 
   const orderDocumentsRequest = () => ({
     shopId,
-    orderNumbers: orderNumbersText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+    orderNumbers: parseOrderNumbers(orderNumbersText),
     outputRoot: orderOutputRoot,
     ozonCompanyId: currentShop?.clientId,
     ozonSellerHarPath,
     ozonSellerCookiePath,
-    baiduCookiePath,
+    baiduCookie,
     baiduSearchDir,
     baiduRecursive,
     downloadMaterials,
@@ -289,9 +295,21 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     writeOrderDocumentsDraft({
       orderNumbersText,
       orderOutputRoot,
+      ozonSellerHarPath,
       ozonSellerCookiePath,
+      baiduSearchDir,
+      baiduRecursive,
+      downloadMaterials,
     });
-  }, [orderNumbersText, orderOutputRoot, ozonSellerCookiePath]);
+  }, [
+    orderNumbersText,
+    orderOutputRoot,
+    ozonSellerHarPath,
+    ozonSellerCookiePath,
+    baiduSearchDir,
+    baiduRecursive,
+    downloadMaterials,
+  ]);
 
   useEffect(() => {
     writeListedUpdateDraft({
@@ -482,13 +500,30 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
   const submitOrderDocuments = async () => {
     await run(async () => {
       if (!shopId) throw new Error("请先选择店铺");
-      if (!orderNumbersText.trim()) throw new Error("请至少输入一个订单/货件编号");
+      if (parseOrderNumbers(orderNumbersText).length === 0) throw new Error("请至少输入一个订单/货件编号");
       if (!orderOutputRoot.trim()) throw new Error("请选择输出目录");
+      if (!ozonSellerHarPath.trim() && !ozonSellerCookiePath.trim()) {
+        throw new Error("请选择 Ozon 后台 HAR，或粘贴 Ozon 后台 Cookie");
+      }
+      if (downloadMaterials && !baiduCookie.trim()) {
+        throw new Error("开启下载货号素材后，请填写百度网盘 Cookie");
+      }
+      if (downloadMaterials && baiduCookie.trim() !== settings.baiduCookie) {
+        await saveBaiduCookie();
+      }
       const job = await api.startOrderDocuments(orderDocumentsRequest());
       setResult(JSON.stringify(job, null, 2));
-      setFriendlyMessage("订单文件下载任务已提交。页面会保留订单号、Cookie 和输出目录。");
+      setFriendlyMessage("订单文件下载任务已提交。页面会保留本次输入和下载配置。");
       onChanged();
     });
+  };
+
+  const saveBaiduCookie = async () => {
+    const cookie = baiduCookie.trim();
+    if (!cookie) throw new Error("请先填写百度网盘 Cookie");
+    const saved = await api.saveSettings({ ...settings, baiduCookie: cookie });
+    setBaiduCookie(saved.baiduCookie);
+    onChanged();
   };
 
   const loadZeroStock = async () => {
@@ -1160,7 +1195,7 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
               <span className="step-dot">3</span>
               <div>
                 <h2>后台授权</h2>
-                <p className="muted">Cookie 会自动保存，下次无需重新粘贴。</p>
+                <p className="muted">HAR 和 Cookie 二选一即可，选择结果会自动保存。</p>
               </div>
             </div>
             <div className="field">
@@ -1182,13 +1217,22 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
             <div className="panel-header">
               <div>
                 <h2>货号素材</h2>
-                <p className="muted">需要把订单商品对应货号素材一起下载时，保持开启并确认百度网盘 Cookie 配置。</p>
+                <p className="muted">这是可选功能，默认关闭；开启后需要填写百度网盘 Cookie。</p>
               </div>
+              <button className="secondary-button" onClick={() => run(async () => {
+                await saveBaiduCookie();
+                setFriendlyMessage("百度网盘 Cookie 已保存。");
+              })}>保存 Cookie</button>
             </div>
             <div className="form-grid">
               <div className="field">
-                <label>百度网盘 Cookie 配置</label>
-                <PathInput value={baiduCookiePath} onChange={setBaiduCookiePath} mode="file" />
+                <label>百度网盘 Cookie</label>
+                <textarea
+                  rows={4}
+                  value={baiduCookie}
+                  onChange={(event) => setBaiduCookie(event.target.value)}
+                  placeholder="粘贴百度网盘 Cookie，需包含 BDUSS"
+                />
               </div>
               <div className="field">
                 <label>网盘搜索目录</label>
@@ -2440,7 +2484,8 @@ function InventoryTable(props: {
   currencyCode: string;
   setResult: (value: string) => void;
 }) {
-  const productIds = props.products.map((row) => row.productId).filter((id): id is number => typeof id === "number");
+  const operationProducts = selectInventoryProducts(props.products, props.selectedProductIds);
+  const productIds = operationProducts.map((row) => row.productId).filter((id): id is number => typeof id === "number");
   const totalPages = Math.max(1, Math.ceil(props.products.length / Math.max(1, props.pageSize)));
   const page = Math.min(props.page, totalPages);
   const pageRows = props.products.slice((page - 1) * props.pageSize, page * props.pageSize);
@@ -2476,7 +2521,7 @@ function InventoryTable(props: {
   const updatePrices = async () => {
     if (!props.shopId) throw new Error("请先选择店铺");
     if (!props.newPrice.trim()) throw new Error("请先填写新售价");
-    const prices = props.products.map((product) => {
+    const prices = operationProducts.map((product) => {
       const currencyCode = product.currencyCode || props.currencyCode.trim();
       if (!currencyCode) throw new Error(`${product.offerId} 缺少商品原币种，请先按分类重新查询商品，或填写备用币种`);
       return {
@@ -2507,22 +2552,22 @@ function InventoryTable(props: {
     <>
       <div className="operation-grid">
         <div className="operation-card">
-          <strong>当前列表更新库存</strong>
-          <span>按当前列表的商品 ID，批量写入上方选择的仓库和库存数量。</span>
+          <strong>{props.selectedProductIds.length > 0 ? "所选商品更新库存" : "当前列表更新库存"}</strong>
+          <span>有勾选时仅处理勾选商品；未勾选时处理当前列表全部商品。</span>
           <button className="primary-button" disabled={productIds.length === 0} onClick={() => updateStocks().catch((error) => props.setResult(String(error)))}>
             更新列表库存
           </button>
         </div>
         <div className="operation-card">
-          <strong>当前列表更新价格</strong>
-          <span>按当前列表的货号，批量写入新售价和可选划线价。</span>
-          <button className="primary-button" disabled={props.products.length === 0} onClick={() => updatePrices().catch((error) => props.setResult(String(error)))}>
+          <strong>{props.selectedProductIds.length > 0 ? "所选商品更新价格" : "当前列表更新价格"}</strong>
+          <span>有勾选时仅处理勾选商品；未勾选时处理当前列表全部商品。</span>
+          <button className="primary-button" disabled={operationProducts.length === 0} onClick={() => updatePrices().catch((error) => props.setResult(String(error)))}>
             更新列表价格
           </button>
         </div>
         <div className="operation-card">
           <strong>生成条码</strong>
-          <span>给当前列表中的商品生成 Ozon 条码。</span>
+          <span>有勾选时仅处理勾选商品；未勾选时处理当前列表全部商品。</span>
           <button className="secondary-button" disabled={productIds.length === 0} onClick={() => generateBarcodes().catch((error) => props.setResult(String(error)))}>
             生成条码
           </button>
@@ -2531,7 +2576,7 @@ function InventoryTable(props: {
       <div className="product-list-header">
         <div>
           <h3>商品列表</h3>
-          <span className="muted">当前页显示 {pageRows.length} 条，已勾选 {props.selectedProductIds.length} 个。</span>
+          <span className="muted">当前页显示 {pageRows.length} 条，已勾选 {props.selectedProductIds.length} 个，本次操作 {operationProducts.length} 个。</span>
         </div>
         <span className="badge neutral">共 {props.products.length} 个商品</span>
       </div>

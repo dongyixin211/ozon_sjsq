@@ -44,6 +44,7 @@ export interface ShopDraft {
 export interface AppSettings {
   defaultSourceRoot: string;
   defaultOutputRoot: string;
+  baiduCookie: string;
   watermarkPath: string;
   contentRoot: string;
   uploadExcelPath: string;
@@ -239,7 +240,7 @@ export interface OrderDocumentsRequest {
   ozonCompanyId?: string;
   ozonSellerHarPath?: string;
   ozonSellerCookiePath?: string;
-  baiduCookiePath?: string;
+  baiduCookie?: string;
   baiduSearchDir?: string;
   baiduRecursive: boolean;
   downloadMaterials: boolean;

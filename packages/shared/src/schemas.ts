@@ -16,6 +16,7 @@ export const shopDraftSchema = z.object({
 export const appSettingsSchema = z.object({
   defaultSourceRoot: z.string(),
   defaultOutputRoot: z.string(),
+  baiduCookie: z.string(),
   watermarkPath: z.string(),
   contentRoot: z.string(),
   uploadExcelPath: z.string(),

@@ -47,6 +47,7 @@ export interface UpdateCategoryProductsRequest {
 const defaultSettings: AppSettings = {
   defaultSourceRoot: "",
   defaultOutputRoot: "",
+  baiduCookie: "",
   watermarkPath: "",
   contentRoot: "",
   uploadExcelPath: "",

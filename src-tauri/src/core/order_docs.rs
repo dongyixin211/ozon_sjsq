@@ -255,14 +255,13 @@ async fn download_baidu_materials(
     order_dir: &Path,
     offer_ids: &[String],
 ) -> Result<baidu_pan::BaiduDownloadResult> {
-    let cookie_path = request
-        .baidu_cookie_path
+    let cookie = request
+        .baidu_cookie
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(baidu_pan::default_config_path);
-    let cookie = baidu_pan::load_cookie_from_config(&cookie_path)?;
+        .context("请先填写百度网盘 Cookie")?
+        .to_string();
     let options = BaiduPanOptions {
         cookie,
         search_dir: request

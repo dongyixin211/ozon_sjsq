@@ -250,10 +250,7 @@ pub async fn merge_product_cards(
     shop_id: String,
     product_ids: Vec<i64>,
 ) -> Result<Value, String> {
-    let product_ids = product_ids
-        .into_iter()
-        .filter(|product_id| *product_id > 0)
-        .collect::<Vec<_>>();
+    let product_ids = clean_product_ids(product_ids);
     if product_ids.len() < 2 {
         return Err("请至少选择 2 个商品进行合并".to_string());
     }
@@ -303,6 +300,16 @@ pub async fn update_category_products(
     if products.is_empty() {
         return Err("所选类目没有匹配商品".to_string());
     }
+    let prices = if update_price {
+        build_category_price_payloads(
+            &products,
+            &price_value,
+            &old_price_value,
+            &fallback_currency,
+        )?
+    } else {
+        Vec::new()
+    };
 
     let mut stock_results = Vec::new();
     if update_stock {
@@ -332,32 +339,6 @@ pub async fn update_category_products(
 
     let mut price_results = Vec::new();
     if update_price {
-        let mut prices = Vec::new();
-        for product in &products {
-            let currency = product
-                .currency_code
-                .as_deref()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let currency = if currency.is_empty() {
-                fallback_currency.clone()
-            } else {
-                currency
-            };
-            if currency.is_empty() {
-                return Err(format!(
-                    "{} 缺少商品原币种，请填写备用币种后再更新价格",
-                    product.offer_id
-                ));
-            }
-            prices.push(json!({
-                "offer_id": product.offer_id.clone(),
-                "price": price_value,
-                "old_price": old_price_value,
-                "currency_code": currency,
-            }));
-        }
         for (index, chunk) in prices.chunks(100).enumerate() {
             let data = client
                 .update_prices(chunk.to_vec())
@@ -579,6 +560,10 @@ pub async fn generate_barcodes(
     shop_id: String,
     product_ids: Vec<i64>,
 ) -> Result<Value, String> {
+    let product_ids = clean_product_ids(product_ids);
+    if product_ids.is_empty() {
+        return Err("请至少选择 1 个商品生成条码".to_string());
+    }
     ozon_client(&state, &shop_id)?
         .generate_barcodes(product_ids)
         .await
@@ -1217,6 +1202,45 @@ fn clean_strings(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn clean_product_ids(values: Vec<i64>) -> Vec<i64> {
+    let mut seen = HashSet::new();
+    values
+        .into_iter()
+        .filter(|value| *value > 0 && seen.insert(*value))
+        .collect()
+}
+
+fn build_category_price_payloads(
+    products: &[OzonProductRow],
+    price: &str,
+    old_price: &str,
+    fallback_currency: &str,
+) -> Result<Vec<Value>, String> {
+    products
+        .iter()
+        .map(|product| {
+            let currency = product.currency_code.as_deref().unwrap_or("").trim();
+            let currency = if currency.is_empty() {
+                fallback_currency
+            } else {
+                currency
+            };
+            if currency.is_empty() {
+                return Err(format!(
+                    "{} 缺少商品原币种，请填写备用币种后再更新价格",
+                    product.offer_id
+                ));
+            }
+            Ok(json!({
+                "offer_id": product.offer_id,
+                "price": price,
+                "old_price": old_price,
+                "currency_code": currency,
+            }))
+        })
+        .collect()
+}
+
 fn is_rename_image(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
@@ -1536,5 +1560,50 @@ mod tests {
         assert_eq!(report.rows[0].sku, "sku-001");
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn category_price_payloads_validate_all_currencies_before_updates() {
+        let products = vec![
+            product_row_for_price("SKU-1", Some("RUB")),
+            product_row_for_price("SKU-2", None),
+        ];
+
+        let error = build_category_price_payloads(&products, "100", "", "").unwrap_err();
+
+        assert_eq!(error, "SKU-2 缺少商品原币种，请填写备用币种后再更新价格");
+    }
+
+    #[test]
+    fn category_price_payloads_use_fallback_currency() {
+        let products = vec![product_row_for_price("SKU-1", None)];
+
+        let payloads = build_category_price_payloads(&products, "100", "120", "RUB").unwrap();
+
+        assert_eq!(payloads[0]["offer_id"], "SKU-1");
+        assert_eq!(payloads[0]["currency_code"], "RUB");
+    }
+
+    #[test]
+    fn product_ids_remove_invalid_values_and_duplicates() {
+        assert_eq!(clean_product_ids(vec![2, 0, 1, 2, -1, 1]), vec![2, 1]);
+    }
+
+    fn product_row_for_price(offer_id: &str, currency_code: Option<&str>) -> OzonProductRow {
+        OzonProductRow {
+            product_id: Some(1),
+            offer_id: offer_id.to_string(),
+            name: String::new(),
+            visibility: None,
+            has_barcode: None,
+            stock_summary: None,
+            category_id: None,
+            category_name: None,
+            type_id: None,
+            type_name: None,
+            price: None,
+            old_price: None,
+            currency_code: currency_code.map(str::to_string),
+        }
     }
 }
