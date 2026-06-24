@@ -478,7 +478,7 @@ pub fn config_from_paths(
             } else {
                 input.to_string()
             };
-            if let Some(cookie) = parse_cookie_input(&raw) {
+            if let Some(cookie) = normalize_cookie_input(&raw) {
                 config.cookie = cookie;
             } else {
                 config.cookie = raw.trim().to_string();
@@ -542,7 +542,7 @@ fn cookies_from_har_entry(entry: &Value) -> Option<String> {
     (!pairs.is_empty()).then(|| pairs.join("; "))
 }
 
-fn parse_cookie_input(raw: &str) -> Option<String> {
+pub fn normalize_cookie_input(raw: &str) -> Option<String> {
     let text = raw.trim();
     if text.is_empty() {
         return None;
@@ -740,14 +740,18 @@ mod tests {
     #[test]
     fn parses_cookie_input_variants() {
         assert_eq!(
-            parse_cookie_input("Cookie: a=1; b=2").as_deref(),
+            normalize_cookie_input("Cookie: a=1; b=2").as_deref(),
             Some("a=1; b=2")
         );
         assert_eq!(
-            parse_cookie_input("curl 'https://seller.ozon.ru' -H 'Cookie: a=1; b=2'").as_deref(),
+            normalize_cookie_input("curl 'https://seller.ozon.ru' -H 'Cookie: a=1; b=2'")
+                .as_deref(),
             Some("a=1; b=2")
         );
-        assert_eq!(parse_cookie_input("a=1; b=2").as_deref(), Some("a=1; b=2"));
+        assert_eq!(
+            normalize_cookie_input("a=1; b=2").as_deref(),
+            Some("a=1; b=2")
+        );
     }
 
     #[test]

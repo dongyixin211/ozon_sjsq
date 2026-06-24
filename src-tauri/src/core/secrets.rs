@@ -56,6 +56,10 @@ pub fn oss_secret_key_id(shop_id: &str) -> String {
     format!("shop:{shop_id}:oss_secret")
 }
 
+pub fn ozon_seller_cookie_id(shop_id: &str) -> String {
+    format!("shop:{shop_id}:ozon_seller_cookie")
+}
+
 pub fn provider_api_key_id(provider_kind: &str, provider_id: &str) -> String {
     format!("provider:{provider_kind}:{provider_id}:api_key")
 }

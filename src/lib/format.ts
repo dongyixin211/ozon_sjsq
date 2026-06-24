@@ -26,6 +26,8 @@ export function jobKindText(kind: string): string {
     scene_ai: "AI 场景",
     batch_upload: "批量上架",
     listed_update: "商品更新",
+    follow_sync: "跟卖同步",
+    follow_automation: "跟卖自动化",
     inventory: "库存",
     barcode: "条码",
     order_documents: "订单文件",

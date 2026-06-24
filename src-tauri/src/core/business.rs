@@ -111,29 +111,20 @@ pub fn list_sku_images(folder: &Path) -> Result<Vec<PathBuf>> {
             .and_then(|v| v.to_str())
             .unwrap_or_default()
             .to_lowercase();
-        let a_rank = if a
-            .file_stem()
-            .and_then(|v| v.to_str())
-            .unwrap_or_default()
-            .ends_with("_ai_portrait")
-        {
-            0
-        } else {
-            1
-        };
-        let b_rank = if b
-            .file_stem()
-            .and_then(|v| v.to_str())
-            .unwrap_or_default()
-            .ends_with("_ai_portrait")
-        {
-            0
-        } else {
-            1
-        };
+        let a_rank = if is_ai_generated_image(a) { 0 } else { 1 };
+        let b_rank = if is_ai_generated_image(b) { 0 } else { 1 };
         (a_rank, a_name).cmp(&(b_rank, b_name))
     });
     Ok(images)
+}
+
+pub fn is_ai_generated_image(path: &Path) -> bool {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    stem.ends_with("_ai_portrait") || stem.ends_with("_ai_vertical")
 }
 
 pub fn analyze_sku_folder(root: &Path) -> Result<SkuFolderReport> {
@@ -1175,10 +1166,7 @@ mod tests {
             rich_json: None,
         });
 
-        assert_eq!(
-            item["attributes"][0]["values"][0]["value"],
-            "NEW-SKU-001"
-        );
+        assert_eq!(item["attributes"][0]["values"][0]["value"], "NEW-SKU-001");
         let rich_value = item["attributes"][1]["values"][0]["value"]
             .as_str()
             .unwrap();
@@ -1330,7 +1318,10 @@ mod tests {
             rich_json: None,
         });
         assert_eq!(item["attributes"][0]["values"][0]["value"], "оранжевый");
-        assert_eq!(item["attributes"][0]["values"][0]["dictionary_value_id"], 61585);
+        assert_eq!(
+            item["attributes"][0]["values"][0]["dictionary_value_id"],
+            61585
+        );
         assert_eq!(item["attributes"][1]["values"][0]["value"], "бежевый");
     }
 }

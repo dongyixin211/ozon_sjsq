@@ -29,6 +29,10 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
     ossBucket: "dyx-ozon-images",
     ossEndpoint: "oss-cn-beijing.aliyuncs.com",
     ossPublicDomain: "https://dyx-ozon-images.oss-cn-beijing.aliyuncs.com",
+    watermarkPath: "",
+    shopRole: "main",
+    followsShopId: "",
+    followWarehouseId: undefined,
     enabled: true,
   });
   const [message, setMessage] = useState("");
@@ -44,7 +48,21 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
 
   const saveShop = async () => {
     const saved = await api.saveShop(shopDraft);
-    setShopDraft({ name: "", clientId: "", apiKey: "", ossAccessKeyId: "", ossAccessKeySecret: "", ossBucket: "dyx-ozon-images", ossEndpoint: "oss-cn-beijing.aliyuncs.com", ossPublicDomain: "https://dyx-ozon-images.oss-cn-beijing.aliyuncs.com", enabled: true });
+    setShopDraft({
+      name: "",
+      clientId: "",
+      apiKey: "",
+      ossAccessKeyId: "",
+      ossAccessKeySecret: "",
+      ossBucket: "dyx-ozon-images",
+      ossEndpoint: "oss-cn-beijing.aliyuncs.com",
+      ossPublicDomain: "https://dyx-ozon-images.oss-cn-beijing.aliyuncs.com",
+      watermarkPath: "",
+      shopRole: "main",
+      followsShopId: "",
+      followWarehouseId: undefined,
+      enabled: true,
+    });
     onChanged();
     try {
       await api.testOzonConnection(saved.id);
@@ -138,6 +156,50 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
             <input type="password" value={shopDraft.apiKey} onChange={(event) => setShopDraft({ ...shopDraft, apiKey: event.target.value })} />
           </div>
           <div className="field">
+            <label>店铺类型</label>
+            <select value={shopDraft.shopRole ?? "main"} onChange={(event) => setShopDraft({
+              ...shopDraft,
+              shopRole: event.target.value as "main" | "follower",
+              followsShopId: event.target.value === "follower" ? shopDraft.followsShopId : "",
+              followWarehouseId: event.target.value === "follower" ? shopDraft.followWarehouseId : undefined,
+            })}>
+              <option value="main">主店</option>
+              <option value="follower">跟卖店铺</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>跟卖主店</label>
+            <select
+              value={shopDraft.followsShopId ?? ""}
+              disabled={(shopDraft.shopRole ?? "main") !== "follower"}
+              onChange={(event) => setShopDraft({ ...shopDraft, followsShopId: event.target.value })}
+            >
+              <option value="">选择主店</option>
+              {shops
+                .filter((shop) => shop.id !== shopDraft.id && (shop.shopRole ?? "main") !== "follower")
+                .map((shop) => (
+                  <option key={shop.id} value={shop.id}>{shop.name} ({shop.clientId})</option>
+                ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>跟卖唯一仓库 ID</label>
+            <input
+              type="number"
+              min={1}
+              disabled={(shopDraft.shopRole ?? "main") !== "follower"}
+              value={shopDraft.followWarehouseId ?? ""}
+              onChange={(event) => setShopDraft({
+                ...shopDraft,
+                followWarehouseId: event.target.value ? Number(event.target.value) : undefined,
+              })}
+            />
+          </div>
+          <div className="field">
+            <label>店铺水印图片</label>
+            <PathInput value={shopDraft.watermarkPath ?? ""} onChange={(value) => setShopDraft({ ...shopDraft, watermarkPath: value })} mode="file" />
+          </div>
+          <div className="field">
             <label>OSS AccessKeyId</label>
             <input value={shopDraft.ossAccessKeyId} onChange={(event) => setShopDraft({ ...shopDraft, ossAccessKeyId: event.target.value })} />
           </div>
@@ -152,15 +214,19 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>名称</th><th>Client-Id</th><th>Ozon Key</th><th>OSS</th><th>操作</th></tr>
+              <tr><th>名称</th><th>Client-Id</th><th>类型</th><th>跟卖主店</th><th>跟卖仓库</th><th>水印</th><th>Ozon Key</th><th>OSS</th><th>操作</th></tr>
             </thead>
             <tbody>
               {shops.map((shop) => (
                 <tr key={shop.id}>
                   <td>{shop.name}</td>
                   <td>{shop.clientId}</td>
+                  <td>{shopRoleLabel(shop)}</td>
+                  <td>{shop.followsShopId ? shops.find((item) => item.id === shop.followsShopId)?.name ?? shop.followsShopId : "-"}</td>
+                  <td>{(shop.shopRole ?? "main") === "follower" ? shop.followWarehouseId ?? "未设置" : "-"}</td>
+                  <td>{shop.watermarkPath ? "已设置" : "未设置"}</td>
                   <td>{shop.apiKeyStored ? "已保存" : "未保存"}</td>
-                  <td>{shop.ossBucket || "-"}</td>
+                  <td>{ossBucketLabel(shop, shops)}</td>
                   <td>
                     <div className="actions">
                       <button className="secondary-button" onClick={() => {
@@ -174,6 +240,10 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
                           ossBucket: shop.ossBucket ?? "dyx-ozon-images",
                           ossEndpoint: shop.ossEndpoint ?? "oss-cn-beijing.aliyuncs.com",
                           ossPublicDomain: shop.ossPublicDomain ?? "https://dyx-ozon-images.oss-cn-beijing.aliyuncs.com",
+                          watermarkPath: shop.watermarkPath ?? "",
+                          shopRole: shop.shopRole ?? "main",
+                          followsShopId: shop.followsShopId ?? "",
+                          followWarehouseId: shop.followWarehouseId,
                           enabled: shop.enabled,
                         });
                       }}>编辑</button>
@@ -193,7 +263,7 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
                   </td>
                 </tr>
               ))}
-              {shops.length === 0 ? <tr><td colSpan={5} className="muted">暂无店铺。</td></tr> : null}
+              {shops.length === 0 ? <tr><td colSpan={9} className="muted">暂无店铺。</td></tr> : null}
             </tbody>
           </table>
         </div>
@@ -282,8 +352,8 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
               {shops.map((shop) => (
                 <tr key={shop.id}>
                   <td>{shop.name}</td>
-                  <td>{shop.ossBucket || "-"}</td>
-                  <td>{shop.ossAccessKeyStored ? "Secret 已保存" : "Secret 未保存"}</td>
+                  <td>{ossBucketLabel(shop, shops)}</td>
+                  <td>{ossStatusLabel(shop)}</td>
                   <td>
                     <button className="secondary-button" onClick={async () => {
                       try {
@@ -450,4 +520,23 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
       </section> : null}
     </div>
   );
+}
+
+function shopRoleLabel(shop: Shop): string {
+  return (shop.shopRole ?? "main") === "follower" ? "跟卖店铺" : "主店";
+}
+
+function ossBucketLabel(shop: Shop, shops: Shop[]): string {
+  if ((shop.shopRole ?? "main") === "follower" && shop.followsShopId) {
+    const mainName = shops.find((item) => item.id === shop.followsShopId)?.name ?? shop.followsShopId;
+    return `复用 ${mainName}`;
+  }
+  return shop.ossBucket || "-";
+}
+
+function ossStatusLabel(shop: Shop): string {
+  if ((shop.shopRole ?? "main") === "follower" && shop.followsShopId) {
+    return "复用主店";
+  }
+  return shop.ossAccessKeyStored ? "Secret 已保存" : "Secret 未保存";
 }

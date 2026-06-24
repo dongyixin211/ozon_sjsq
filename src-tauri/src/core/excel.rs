@@ -107,7 +107,13 @@ pub fn read_content_rows(path: &Path) -> Result<Vec<ContentRow>> {
     let product_color_idx = optional_header_index(&headers, &["商品颜色", "颜色", "product_color"]);
     let color_name_idx = optional_header_index(
         &headers,
-        &["颜色名称(俄语)", "颜色名称", "俄语颜色", "color_name", "color_name_ru"],
+        &[
+            "颜色名称(俄语)",
+            "颜色名称",
+            "俄语颜色",
+            "color_name",
+            "color_name_ru",
+        ],
     );
     let desc_idx = optional_header_index(&headers, &["简介", "描述", "description"]);
     let rich_idx = optional_header_index(

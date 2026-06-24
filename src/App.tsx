@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Boxes,
-  Brush,
   ClipboardList,
+  FileText,
   Home,
   Images,
   RefreshCw,
@@ -13,18 +13,18 @@ import type { AppSettings, JobSummary, Shop } from "@shared/types";
 import { api, type AppSnapshot } from "./lib/api";
 import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { MaterialsPage } from "./features/materials/MaterialsPage";
-import { ScenePage } from "./features/scene/ScenePage";
 import { OzonPage } from "./features/ozon/OzonPage";
+import { OrdersPage } from "./features/orders/OrdersPage";
 import { JobsPage } from "./features/jobs/JobsPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
 
-type PageKey = "dashboard" | "materials" | "scene" | "ozon" | "jobs" | "settings";
+type PageKey = "dashboard" | "materials" | "ozon" | "orders" | "jobs" | "settings";
 
 const navItems: Array<{ key: PageKey; label: string; icon: typeof Home }> = [
   { key: "dashboard", label: "首页", icon: Home },
   { key: "materials", label: "素材生成", icon: Images },
-  { key: "scene", label: "场景图", icon: Brush },
   { key: "ozon", label: "上架运维", icon: ShoppingBag },
+  { key: "orders", label: "订单查询", icon: FileText },
   { key: "jobs", label: "任务记录", icon: ClipboardList },
   { key: "settings", label: "设置", icon: Settings },
 ];
@@ -121,8 +121,8 @@ export function App() {
           />
         )}
         {page === "materials" && settings && <MaterialsPage settings={settings} onChanged={refresh} onJobStarted={refresh} onNavigate={setPage} />}
-        {page === "scene" && <ScenePage onJobStarted={refresh} />}
         {page === "ozon" && settings && <OzonPage shops={shops} settings={settings} onChanged={refresh} onNavigate={setPage} />}
+        {page === "orders" && settings && <OrdersPage shops={shops} settings={settings} onChanged={refresh} onNavigate={setPage} />}
         {page === "jobs" && <JobsPage jobs={jobs} selectedJobId={selectedJobId} onChanged={refresh} />}
         {page === "settings" && settings && (
           <SettingsPage

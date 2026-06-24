@@ -10,6 +10,10 @@ export const shopDraftSchema = z.object({
   ossBucket: z.string().optional(),
   ossEndpoint: z.string().optional(),
   ossPublicDomain: z.string().url().optional().or(z.literal("")),
+  watermarkPath: z.string().optional(),
+  shopRole: z.enum(["main", "follower"]).optional(),
+  followsShopId: z.string().optional(),
+  followWarehouseId: z.number().int().positive().optional(),
   enabled: z.boolean(),
 });
 

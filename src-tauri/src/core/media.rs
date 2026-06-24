@@ -1,8 +1,8 @@
 use crate::core::ai::{
-    is_missing_chat_content_error, is_ollama_provider, is_pixel_provider, CopyPayload,
-    OpenAiCompatibleClient, TitlePayload,
+    is_missing_chat_content_error, is_ollama_provider, is_pixel_provider, is_retryable_image_error,
+    CopyPayload, OpenAiCompatibleClient, TitlePayload,
 };
-use crate::core::business::list_sku_images;
+use crate::core::business::{is_ai_generated_image, list_sku_images};
 use crate::core::excel::{self, ContentRow};
 use crate::core::jobs::JobRegistry;
 use crate::core::models::{JobStatus, LocalSceneRequest, MaterialsRequest};
@@ -29,6 +29,9 @@ const TITLE_RETRY_LIMIT: usize = 3;
 const OLLAMA_TITLE_RETRY_LIMIT: usize = 2;
 const PIXEL_TITLE_RETRY_LIMIT: usize = 3;
 const TITLE_RETRY_BASE_DELAY_MS: u64 = 800;
+const AI_IMAGE_CONCURRENCY_LIMIT: usize = 10;
+const AI_IMAGE_RETRY_LIMIT: usize = 3;
+const AI_IMAGE_RETRY_BASE_DELAY_MS: u64 = 1200;
 const PIXEL_VISION_FALLBACK_MODEL: &str = "gpt-5.4-mini";
 const PIXEL_VISION_FALLBACK_RETRY_LIMIT: usize = 2;
 
@@ -64,14 +67,20 @@ async fn materials_inner(
     {
         anyhow::bail!("3:4 输出目录不能为空");
     }
-    let mut items = collect_sku_images(&source_root)?;
-    if let Some(max_items) = request.max_items.filter(|value| *value > 0) {
-        items.truncate(max_items as usize);
-    }
-    if items.is_empty() {
-        anyhow::bail!("源目录下没有可处理图片");
-    }
-    jobs.log(job_id, "info", &format!("发现 {} 张图片", items.len()));
+    let needs_all_images = request.convert_originals || request.generate_copy;
+    let items = if needs_all_images {
+        let mut items = collect_sku_images(&source_root)?;
+        if let Some(max_items) = request.max_items.filter(|value| *value > 0) {
+            items.truncate(max_items as usize);
+        }
+        if items.is_empty() {
+            anyhow::bail!("源目录下没有可处理图片");
+        }
+        jobs.log(job_id, "info", &format!("发现 {} 张图片", items.len()));
+        items
+    } else {
+        Vec::new()
+    };
 
     let watermark = request
         .watermark_path
@@ -148,80 +157,78 @@ async fn materials_inner(
         return Ok(());
     }
 
-    for (index, (sku, image_path)) in items.iter().enumerate() {
-        if jobs.is_cancelled(job_id) {
-            jobs.log(job_id, "warn", "素材生成已取消");
-            return Ok(());
+    if let Some(client) = &image_client {
+        let mut ai_items = collect_first_sku_images(&source_root)?;
+        if let Some(max_items) = request.max_items.filter(|value| *value > 0) {
+            ai_items.truncate(max_items as usize);
         }
-        if let Some(client) = &image_client {
-            let output = portrait_root.join(sku).join(format!(
-                "{}_ai_vertical.png",
-                image_path
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("image")
-            ));
-            let prompt =
-                render_prompt(&request.image_prompt_template, sku, &[image_path.as_path()]);
-            client
-                .generate_image_from_reference(
-                    &request.image_model,
-                    &prompt,
-                    Some(image_path),
-                    &output,
-                )
-                .await?;
-            jobs.log(
-                job_id,
-                "info",
-                &format!("已生成 AI 图片: {}", output.display()),
-            );
+        if ai_items.is_empty() {
+            anyhow::bail!("上传目录下没有可用于 AI 生成的首图");
         }
-        if let Some(client) = &text_client {
-            let title_sku = image_file_stem(image_path);
-            let title_prompt = render_prompt(
-                &request.title_prompt_template,
-                &title_sku,
-                &[image_path.as_path()],
-            );
-            let title = client
-                .generate_title_from_images(
-                    &request.text_model,
-                    &title_prompt,
-                    &[image_path.as_path()],
-                )
-                .await
-                .with_context(|| format!("AI 标题生成失败: {title_sku}"))?;
-            let mut copy = if request.description_prompt_template.trim().is_empty() {
-                CopyPayload {
-                    title,
-                    description: String::new(),
-                    bullets: Vec::new(),
-                }
-            } else {
-                let description_prompt = render_prompt(
-                    &request.description_prompt_template,
+        jobs.log(
+            job_id,
+            "info",
+            &format!(
+                "开始 AI 图片生成，共 {} 个 SKU，最多 {} 个并发",
+                ai_items.len(),
+                AI_IMAGE_CONCURRENCY_LIMIT.min(ai_items.len().max(1))
+            ),
+        );
+        run_ai_image_batch(jobs, job_id, client, &request, &ai_items, &portrait_root).await?;
+    }
+
+    if text_client.is_some() || request.generate_copy {
+        for (index, (sku, image_path)) in items.iter().enumerate() {
+            if jobs.is_cancelled(job_id) {
+                jobs.log(job_id, "warn", "素材生成已取消");
+                return Ok(());
+            }
+            if let Some(client) = &text_client {
+                let title_sku = image_file_stem(image_path);
+                let title_prompt = render_prompt(
+                    &request.title_prompt_template,
                     &title_sku,
                     &[image_path.as_path()],
                 );
-                let mut copy = client
-                    .generate_copy(&request.text_model, &description_prompt)
-                    .await?;
+                let title = client
+                    .generate_title_from_images(
+                        &request.text_model,
+                        &title_prompt,
+                        &[image_path.as_path()],
+                    )
+                    .await
+                    .with_context(|| format!("AI 标题生成失败: {title_sku}"))?;
+                let mut copy = if request.description_prompt_template.trim().is_empty() {
+                    CopyPayload {
+                        title,
+                        description: String::new(),
+                        bullets: Vec::new(),
+                    }
+                } else {
+                    let description_prompt = render_prompt(
+                        &request.description_prompt_template,
+                        &title_sku,
+                        &[image_path.as_path()],
+                    );
+                    let mut copy = client
+                        .generate_copy(&request.text_model, &description_prompt)
+                        .await?;
+                    if copy.title.trim().is_empty() {
+                        copy.title = title;
+                    }
+                    copy
+                };
                 if copy.title.trim().is_empty() {
-                    copy.title = title;
+                    copy.title = title_sku.clone();
                 }
-                copy
-            };
-            if copy.title.trim().is_empty() {
-                copy.title = title_sku.clone();
+                write_copy_files(request.content_root.as_deref(), &title_sku, &copy)?;
+                jobs.log(job_id, "info", &format!("已生成文案: {title_sku}"));
+            } else if request.generate_copy {
+                write_copy_stub(request.content_root.as_deref(), sku)?;
             }
-            write_copy_files(request.content_root.as_deref(), &title_sku, &copy)?;
-            jobs.log(job_id, "info", &format!("已生成文案: {title_sku}"));
-        } else if request.generate_copy {
-            write_copy_stub(request.content_root.as_deref(), sku)?;
+            let progress = (((index + 1) * 100) / items.len()).clamp(1, 99) as u8;
+            jobs.update(job_id, JobStatus::Running, progress, None);
         }
-        let progress = (((index + 1) * 100) / items.len()).clamp(1, 99) as u8;
-        jobs.update(job_id, JobStatus::Running, progress, None);
     }
     if request.convert_originals {
         jobs.complete_with_result(
@@ -401,7 +408,10 @@ async fn generate_title_rows_batch(
         jobs.log(
             job_id,
             "warn",
-            &format!("标题生成完成，成功 {} 条，跳过失败 {} 条", success_count, failed_count),
+            &format!(
+                "标题生成完成，成功 {} 条，跳过失败 {} 条",
+                success_count, failed_count
+            ),
         );
     }
 
@@ -476,8 +486,7 @@ async fn generate_title_row_with_retry(
                     ));
                 }
                 Ok(_) => {
-                    last_error =
-                        format!("{PIXEL_VISION_FALLBACK_MODEL} 图片兜底返回空标题");
+                    last_error = format!("{PIXEL_VISION_FALLBACK_MODEL} 图片兜底返回空标题");
                 }
                 Err(error) => {
                     last_error = format!(
@@ -568,6 +577,155 @@ fn title_concurrency_limit(request: &MaterialsRequest) -> usize {
 fn title_retry_delay_ms(sku: &str, attempt: usize) -> u64 {
     let jitter = sku.bytes().fold(0u64, |sum, byte| sum + byte as u64) % 700;
     TITLE_RETRY_BASE_DELAY_MS * 2u64.pow(attempt.saturating_sub(1) as u32) + jitter
+}
+
+async fn run_ai_image_batch(
+    jobs: &JobRegistry,
+    job_id: &str,
+    client: &OpenAiCompatibleClient,
+    request: &MaterialsRequest,
+    items: &[(String, PathBuf)],
+    portrait_root: &Path,
+) -> Result<()> {
+    let total = items.len().max(1);
+    let concurrency_limit = AI_IMAGE_CONCURRENCY_LIMIT.min(total);
+    let mut next_index = 0usize;
+    let mut processed = 0usize;
+    let mut pending = JoinSet::new();
+
+    while next_index < items.len() && pending.len() < concurrency_limit {
+        spawn_ai_image_task(
+            &mut pending,
+            jobs,
+            job_id,
+            client,
+            request,
+            portrait_root,
+            &items[next_index],
+        );
+        next_index += 1;
+    }
+
+    while let Some(joined) = pending.join_next().await {
+        let (sku, output) = joined.context("AI 图片生成任务异常退出")??;
+        if jobs.is_cancelled(job_id) {
+            jobs.log(job_id, "warn", "AI 图片生成已取消");
+            pending.abort_all();
+            return Ok(());
+        }
+        processed += 1;
+        jobs.log(
+            job_id,
+            "info",
+            &format!("已生成 AI 图片: {}", output.display()),
+        );
+        let progress = ((processed * 100) / total).clamp(1, 99) as u8;
+        jobs.update(job_id, JobStatus::Running, progress, None);
+
+        if next_index < items.len() && !jobs.is_cancelled(job_id) {
+            spawn_ai_image_task(
+                &mut pending,
+                jobs,
+                job_id,
+                client,
+                request,
+                portrait_root,
+                &items[next_index],
+            );
+            next_index += 1;
+        }
+        if jobs.is_cancelled(job_id) {
+            jobs.log(job_id, "warn", &format!("{sku} 之后的 AI 图片生成已取消"));
+            pending.abort_all();
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
+fn spawn_ai_image_task(
+    pending: &mut JoinSet<Result<(String, PathBuf)>>,
+    jobs: &JobRegistry,
+    job_id: &str,
+    client: &OpenAiCompatibleClient,
+    request: &MaterialsRequest,
+    portrait_root: &Path,
+    item: &(String, PathBuf),
+) {
+    let jobs = jobs.clone();
+    let job_id = job_id.to_string();
+    let client = client.clone();
+    let model = request.image_model.clone();
+    let prompt_template = request.image_prompt_template.clone();
+    let portrait_root = portrait_root.to_path_buf();
+    let (sku, image_path) = item.clone();
+    pending.spawn(async move {
+        let output = portrait_root.join(&sku).join(format!(
+            "{}_ai_portrait.png",
+            image_path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("image")
+        ));
+        let prompt = render_prompt(&prompt_template, &sku, &[image_path.as_path()]);
+        edit_image_with_retry(
+            &jobs,
+            &job_id,
+            &client,
+            &model,
+            &prompt,
+            &image_path,
+            &output,
+            &sku,
+        )
+        .await?;
+        Ok((sku, output))
+    });
+}
+
+async fn edit_image_with_retry(
+    jobs: &JobRegistry,
+    job_id: &str,
+    client: &OpenAiCompatibleClient,
+    model: &str,
+    prompt: &str,
+    image_path: &Path,
+    output: &Path,
+    sku: &str,
+) -> Result<()> {
+    for attempt in 1..=AI_IMAGE_RETRY_LIMIT {
+        match client
+            .edit_image_from_reference(model, prompt, image_path, output)
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let retryable = is_retryable_image_error(&error);
+                let message = error_chain(&error);
+                if retryable && attempt < AI_IMAGE_RETRY_LIMIT {
+                    let delay_ms = ai_image_retry_delay_ms(sku, attempt);
+                    jobs.log(
+                        job_id,
+                        "warn",
+                        &format!(
+                            "{sku} AI 图片生成请求中断，第 {attempt} 次失败，{}ms 后重试：{message}",
+                            delay_ms
+                        ),
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    continue;
+                }
+                return Err(anyhow::anyhow!("{sku} AI 图片生成失败: {message}"));
+            }
+        }
+    }
+    anyhow::bail!("{sku} AI 图片生成失败")
+}
+
+fn ai_image_retry_delay_ms(sku: &str, attempt: usize) -> u64 {
+    let jitter = sku.bytes().fold(0u64, |sum, byte| sum + byte as u64) % 900;
+    AI_IMAGE_RETRY_BASE_DELAY_MS * 2u64.pow(attempt.saturating_sub(1) as u32) + jitter
 }
 
 fn title_retry_limit(request: &MaterialsRequest) -> usize {
@@ -671,6 +829,21 @@ fn create_portrait_variant_with_watermark(
     save_png(&DynamicImage::ImageRgba8(canvas), destination_path)
 }
 
+pub fn create_watermarked_upload_copy(
+    source_path: &Path,
+    watermark_path: &Path,
+    destination_path: &Path,
+) -> Result<()> {
+    let source_bytes = std::fs::read(source_path)
+        .with_context(|| format!("无法读取图片 {}", source_path.display()))?;
+    let original = image::load_from_memory(&source_bytes)
+        .with_context(|| format!("无法打开图片 {}", source_path.display()))?;
+    let mut canvas = original.to_rgba8();
+    let watermark = load_watermark(watermark_path, (canvas.width(), canvas.height()))?;
+    apply_watermark(&mut canvas, &watermark);
+    save_png(&DynamicImage::ImageRgba8(canvas), destination_path)
+}
+
 fn render_scene(
     product: &DynamicImage,
     canvas_size: (u32, u32),
@@ -763,6 +936,38 @@ fn collect_sku_images(root: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(result)
 }
 
+fn collect_first_sku_images(root: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let mut result = Vec::new();
+    for entry in root.read_dir()? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            let sku = entry.file_name().to_string_lossy().to_string();
+            if let Some(image) = list_sku_images(&path)?
+                .into_iter()
+                .find(|image| !is_ai_generated_image(image))
+            {
+                result.push((sku, image));
+            }
+        }
+    }
+    if result.is_empty() {
+        for image in list_sku_images(root)?
+            .into_iter()
+            .filter(|image| !is_ai_generated_image(image))
+        {
+            let sku = image
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("sku")
+                .to_string();
+            result.push((sku, image));
+        }
+    }
+    result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    Ok(result)
+}
+
 fn text_provider_key(request: &MaterialsRequest) -> Result<String> {
     if is_ollama_provider(&request.text_provider) {
         return Ok(String::new());
@@ -830,7 +1035,9 @@ fn rotate_nearest_90(image: DynamicImage, rotate_deg: f32) -> DynamicImage {
 }
 
 fn load_watermark(watermark_path: &Path, canvas_size: (u32, u32)) -> Result<RgbaImage> {
-    let watermark = image::open(watermark_path)
+    let watermark_bytes = std::fs::read(watermark_path)
+        .with_context(|| format!("无法读取水印 {}", watermark_path.display()))?;
+    let watermark = image::load_from_memory(&watermark_bytes)
         .with_context(|| format!("无法打开水印 {}", watermark_path.display()))?
         .to_rgba8();
     let max_width = (canvas_size.0 as f32 * 0.18).max(1.0) as u32;
@@ -1069,5 +1276,30 @@ mod tests {
         assert!((TITLE_RETRY_BASE_DELAY_MS..TITLE_RETRY_BASE_DELAY_MS + 700).contains(&first));
         assert_eq!(second - first, TITLE_RETRY_BASE_DELAY_MS);
         assert_ne!(first, title_retry_delay_ms("SKU-B", 1));
+    }
+
+    #[test]
+    fn watermarked_upload_copy_reads_image_bytes_without_extension() {
+        let root =
+            std::env::temp_dir().join(format!("ozon-sjsq-watermark-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.img");
+        let watermark = root.join("watermark.img");
+        let output = root.join("output.png");
+        save_png(
+            &DynamicImage::ImageRgba8(ImageBuffer::from_pixel(8, 8, Rgba([240, 240, 240, 255]))),
+            &source,
+        )
+        .unwrap();
+        save_png(
+            &DynamicImage::ImageRgba8(ImageBuffer::from_pixel(2, 2, Rgba([20, 20, 20, 180]))),
+            &watermark,
+        )
+        .unwrap();
+
+        create_watermarked_upload_copy(&source, &watermark, &output).unwrap();
+
+        assert!(output.is_file());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

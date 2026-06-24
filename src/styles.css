@@ -522,6 +522,7 @@ h3 { font-size: 13px; }
   font-size: 13px;
 }
 .field textarea { min-height: 80px; resize: vertical; }
+.follow-price-field { width: 126px; min-width: 126px; margin-bottom: 0; }
 
 .table-wrap { overflow: auto; border: 1px solid #e3e9f1; border-radius: 6px; }
 

@@ -6,6 +6,7 @@ use crate::core::excel::{
     ContentRow,
 };
 use crate::core::jobs::JobRegistry;
+use crate::core::media;
 use crate::core::models::{
     AttributeDictionaryValue, BatchUploadRequest, ImportPreviewInput, JobStatus,
     ListedUpdateRequest, Shop,
@@ -90,9 +91,24 @@ async fn batch_upload_inner(
         let ozon =
             OzonSellerClient::new(runtime.shop.client_id.clone(), runtime.ozon_api_key.clone())?;
         let oss = oss_client(&runtime)?;
-        let color_resolver = load_color_dictionary_resolver(&ozon, request.template_product.as_ref())
-            .await
-            .unwrap_or_default();
+        let watermark_path = shop_watermark_path(&runtime.shop)?;
+        let upload_temp_root = std::env::temp_dir()
+            .join("ozon-sjsq-upload-watermark")
+            .join(job_id)
+            .join(safe_path_part(&runtime.shop.id));
+        jobs.log(
+            job_id,
+            "info",
+            &format!(
+                "{} 使用店铺水印: {}",
+                runtime.shop.name,
+                watermark_path.display()
+            ),
+        );
+        let color_resolver =
+            load_color_dictionary_resolver(&ozon, request.template_product.as_ref())
+                .await
+                .unwrap_or_default();
         for row in &rows {
             if jobs.is_cancelled(job_id) {
                 jobs.log(job_id, "warn", "批量上架已取消");
@@ -106,6 +122,8 @@ async fn batch_upload_inner(
                 &oss,
                 &runtime.shop.client_id,
                 &portrait_root,
+                &watermark_path,
+                &upload_temp_root,
                 &request,
                 &color_resolver,
                 row,
@@ -155,6 +173,8 @@ async fn process_upload_row(
     oss: &AliyunOssClient,
     client_id: &str,
     portrait_root: &Path,
+    watermark_path: &Path,
+    upload_temp_root: &Path,
     request: &BatchUploadRequest,
     color_resolver: &ColorDictionaryResolver,
     row: &ContentRow,
@@ -203,9 +223,11 @@ async fn process_upload_row(
         jobs.log(
             job_id,
             "info",
-            &format!("{} 上传 OSS: {}", row.sku, object_key),
+            &format!("{} 合并水印后上传 OSS: {}", row.sku, object_key),
         );
-        image_urls.push(oss.upload_file(&image, &object_key).await?);
+        let upload_path =
+            prepare_watermarked_upload_image(&image, watermark_path, upload_temp_root, &row.sku)?;
+        image_urls.push(oss.upload_file(&upload_path, &object_key).await?);
     }
     let uploaded_image_count = image_urls.len();
     let resolved_product_color_values =
@@ -245,19 +267,18 @@ async fn process_upload_row(
             }
         ),
     );
-    let post_process_errors = if request.auto_generate_barcode
-        || request.auto_update_stock
-        || request.auto_add_to_action
-    {
-        match wait_for_product_id(ozon, &row.sku).await {
-            Ok(product_id) => {
-                run_upload_post_process(jobs, job_id, ozon, request, &row.sku, product_id).await
+    let post_process_errors =
+        if request.auto_generate_barcode || request.auto_update_stock || request.auto_add_to_action
+        {
+            match wait_for_product_id(ozon, &row.sku).await {
+                Ok(product_id) => {
+                    run_upload_post_process(jobs, job_id, ozon, request, &row.sku, product_id).await
+                }
+                Err(error) => vec![format!("等待商品上架完成失败：{error}")],
             }
-            Err(error) => vec![format!("等待商品上架完成失败：{error}")],
-        }
-    } else {
-        Vec::new()
-    };
+        } else {
+            Vec::new()
+        };
     for error in &post_process_errors {
         jobs.log(job_id, "warn", &format!("{} {error}", row.sku));
     }
@@ -316,11 +337,7 @@ async fn run_upload_post_process(
         let warehouse_id = request.auto_warehouse_id.unwrap_or_default();
         let stock = request.auto_stock.unwrap_or_default();
         match retry_update_stock(ozon, product_id, warehouse_id, stock).await {
-            Ok(_) => jobs.log(
-                job_id,
-                "info",
-                &format!("{offer_id} 已自动补库存 {stock}"),
-            ),
+            Ok(_) => jobs.log(job_id, "info", &format!("{offer_id} 已自动补库存 {stock}")),
             Err(error) => errors.push(format!("自动补库存失败：{error}")),
         }
     }
@@ -491,14 +508,16 @@ fn candidate_discount(item: &Value, action_price: &str) -> Option<i64> {
     {
         return Some(discount.clamp(1, 99));
     }
-    let base_price = item.get("price").and_then(scalar_text)?.parse::<f64>().ok()?;
+    let base_price = item
+        .get("price")
+        .and_then(scalar_text)?
+        .parse::<f64>()
+        .ok()?;
     let action_price = action_price.parse::<f64>().ok()?;
     if base_price <= 0.0 || action_price <= 0.0 || action_price >= base_price {
         return None;
     }
-    Some(
-        ((((base_price - action_price) / base_price) * 100.0).round() as i64).clamp(1, 99),
-    )
+    Some(((((base_price - action_price) / base_price) * 100.0).round() as i64).clamp(1, 99))
 }
 
 fn scalar_text(value: &Value) -> Option<String> {
@@ -723,6 +742,52 @@ async fn upload_sku_images(
     Ok(urls)
 }
 
+fn shop_watermark_path(shop: &Shop) -> Result<PathBuf> {
+    let path = shop
+        .watermark_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("{} 未配置店铺水印图片", shop.name))?;
+    if !path.is_file() {
+        anyhow::bail!("{} 店铺水印图片不存在: {}", shop.name, path.display());
+    }
+    Ok(path)
+}
+
+fn prepare_watermarked_upload_image(
+    source_path: &Path,
+    watermark_path: &Path,
+    upload_temp_root: &Path,
+    sku: &str,
+) -> Result<PathBuf> {
+    let stem = source_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("image");
+    let destination = upload_temp_root
+        .join(safe_path_part(sku))
+        .join(format!("{}_watermarked.png", safe_path_part(stem)));
+    media::create_watermarked_upload_copy(source_path, watermark_path, &destination)?;
+    Ok(destination)
+}
+
+fn safe_path_part(value: &str) -> String {
+    let cleaned = value
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => ch,
+        })
+        .collect::<String>();
+    if cleaned.trim().is_empty() {
+        "item".into()
+    } else {
+        cleaned
+    }
+}
+
 async fn product_exists(ozon: &OzonSellerClient, offer_id: &str) -> Result<bool> {
     let data = ozon.product_info(vec![offer_id.to_string()]).await?;
     Ok(!extract_items(&data).is_empty())
@@ -870,19 +935,65 @@ fn normalize_color_text(value: &str) -> String {
 fn color_tokens(value: &str) -> Vec<&'static str> {
     let normalized = normalize_color_text(value);
     let token_map = [
-        ("orange", &["橙", "橘", "оранж", "персик", "коралл", "терракот"][..]),
-        ("pink", &["粉", "роз", "пудр", "фукси", "малинов", "фламинго"][..]),
+        (
+            "orange",
+            &["橙", "橘", "оранж", "персик", "коралл", "терракот"][..],
+        ),
+        (
+            "pink",
+            &["粉", "роз", "пудр", "фукси", "малинов", "фламинго"][..],
+        ),
         ("red", &["红", "крас", "бордов", "алый", "вишнев"][..]),
         ("yellow", &["黄", "желт", "лимон", "горч", "золот"][..]),
-        ("green", &["绿", "зелен", "олив", "хаки", "мят", "изумруд", "салат"][..]),
-        ("blue", &["蓝", "син", "голуб", "лазур", "бирюз", "индиго", "васильк"][..]),
-        ("purple", &["紫", "фиолет", "сирен", "лилов", "лаванд", "баклаж"][..]),
-        ("brown", &["棕", "咖", "корич", "коф", "какао", "мокко", "шоколад", "карамел"][..]),
-        ("gray", &["灰", "сер", "графит", "антрацит", "металлик", "серебр"][..]),
+        (
+            "green",
+            &["绿", "зелен", "олив", "хаки", "мят", "изумруд", "салат"][..],
+        ),
+        (
+            "blue",
+            &["蓝", "син", "голуб", "лазур", "бирюз", "индиго", "васильк"][..],
+        ),
+        (
+            "purple",
+            &["紫", "фиолет", "сирен", "лилов", "лаванд", "баклаж"][..],
+        ),
+        (
+            "brown",
+            &[
+                "棕",
+                "咖",
+                "корич",
+                "коф",
+                "какао",
+                "мокко",
+                "шоколад",
+                "карамел",
+            ][..],
+        ),
+        (
+            "gray",
+            &["灰", "сер", "графит", "антрацит", "металлик", "серебр"][..],
+        ),
         ("black", &["黑", "черн"][..]),
-        ("white", &["白", "бел", "молоч", "айвори", "слоноваякость", "кремово-бел"][..]),
-        ("beige", &["米", "беж", "крем", "песоч", "телес", "нюдов"][..]),
-        ("gold", &["金", "gold", "золот", "шампань", "розовозолот", "золотист"][..]),
+        (
+            "white",
+            &[
+                "白",
+                "бел",
+                "молоч",
+                "айвори",
+                "слоноваякость",
+                "кремово-бел",
+            ][..],
+        ),
+        (
+            "beige",
+            &["米", "беж", "крем", "песоч", "телес", "нюдов"][..],
+        ),
+        (
+            "gold",
+            &["金", "gold", "золот", "шампань", "розовозолот", "золотист"][..],
+        ),
         ("silver", &["银", "silver", "серебр", "хром", "зеркал"][..]),
         ("multicolor", &["混", "多色", "разноцвет"][..]),
     ];

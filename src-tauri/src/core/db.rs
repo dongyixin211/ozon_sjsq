@@ -45,6 +45,10 @@ impl Database {
               oss_bucket TEXT,
               oss_endpoint TEXT,
               oss_public_domain TEXT,
+              watermark_path TEXT,
+              shop_role TEXT,
+              follows_shop_id TEXT,
+              follow_warehouse_id INTEGER,
               api_key_plain TEXT,
               oss_secret_plain TEXT,
               enabled INTEGER NOT NULL DEFAULT 1,
@@ -86,8 +90,15 @@ impl Database {
             "#,
         )?;
 
-        // 兼容旧表：安全地添加明文密钥列
-        for col in ["api_key_plain", "oss_secret_plain"] {
+        // 兼容旧表：安全地添加新列
+        for col in [
+            "api_key_plain",
+            "oss_secret_plain",
+            "watermark_path",
+            "shop_role",
+            "follows_shop_id",
+            "follow_warehouse_id",
+        ] {
             let check: bool = self
                 .conn
                 .prepare("SELECT COUNT(*) FROM pragma_table_info('shops') WHERE name = ?1 LIMIT 1")
@@ -95,9 +106,15 @@ impl Database {
                 .map(|count| count > 0)
                 .unwrap_or(false);
             if !check {
-                let _ = self
-                    .conn
-                    .execute_batch(&format!("ALTER TABLE shops ADD COLUMN {} TEXT;", col));
+                let column_type = if col == "follow_warehouse_id" {
+                    "INTEGER"
+                } else {
+                    "TEXT"
+                };
+                let _ = self.conn.execute_batch(&format!(
+                    "ALTER TABLE shops ADD COLUMN {} {};",
+                    col, column_type
+                ));
             }
         }
         Ok(())
@@ -107,27 +124,40 @@ impl Database {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT id, name, client_id, api_key_ref, oss_access_key_id, oss_secret_ref,
-                   oss_bucket, oss_endpoint, oss_public_domain, api_key_plain, oss_secret_plain, enabled, created_at, updated_at
+                   oss_bucket, oss_endpoint, oss_public_domain, watermark_path, shop_role,
+                   follows_shop_id, follow_warehouse_id, api_key_plain, oss_secret_plain,
+                   enabled, created_at, updated_at
             FROM shops
             ORDER BY enabled DESC, updated_at DESC
             "#,
         )?;
         let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
             Ok(Shop {
-                id: row.get(0)?,
+                ozon_seller_cookie_stored: secrets::get_secret(&secrets::ozon_seller_cookie_id(
+                    &id,
+                ))
+                .is_ok(),
+                id,
                 name: row.get(1)?,
                 client_id: row.get(2)?,
                 api_key_stored: !row.get::<_, String>(3)?.is_empty(),
-                api_key_plain: row.get(9)?,
-                oss_secret_plain: row.get(10)?,
                 oss_access_key_id: row.get(4)?,
                 oss_access_key_stored: row.get::<_, Option<String>>(5)?.is_some(),
                 oss_bucket: row.get(6)?,
                 oss_endpoint: row.get(7)?,
                 oss_public_domain: row.get(8)?,
-                enabled: row.get::<_, i64>(11)? == 1,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
+                watermark_path: row.get(9)?,
+                shop_role: row
+                    .get::<_, Option<String>>(10)?
+                    .or_else(|| Some("main".into())),
+                follows_shop_id: row.get(11)?,
+                follow_warehouse_id: row.get(12)?,
+                api_key_plain: row.get(13)?,
+                oss_secret_plain: row.get(14)?,
+                enabled: row.get::<_, i64>(15)? == 1,
+                created_at: row.get(16)?,
+                updated_at: row.get(17)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -201,15 +231,36 @@ impl Database {
                 |row| row.get(0),
             )
             .unwrap_or_else(|_| now.clone());
+        let shop_role = draft
+            .shop_role
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| *value == "follower")
+            .unwrap_or("main")
+            .to_string();
+        let follows_shop_id = if shop_role == "follower" {
+            empty_to_none(draft.follows_shop_id)
+        } else {
+            None
+        };
+        let follow_warehouse_id = if shop_role == "follower" {
+            draft.follow_warehouse_id.filter(|value| *value > 0)
+        } else {
+            None
+        };
+        if follows_shop_id.as_deref() == Some(id.as_str()) {
+            anyhow::bail!("跟卖店铺不能跟卖自己");
+        }
 
         self.conn.execute(
             r#"
             INSERT INTO shops (
               id, name, client_id, api_key_ref, oss_access_key_id, oss_secret_ref,
-              oss_bucket, oss_endpoint, oss_public_domain, api_key_plain, oss_secret_plain,
+              oss_bucket, oss_endpoint, oss_public_domain, watermark_path, shop_role,
+              follows_shop_id, follow_warehouse_id, api_key_plain, oss_secret_plain,
               enabled, created_at, updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
             ON CONFLICT(id) DO UPDATE SET
               name = excluded.name,
               client_id = excluded.client_id,
@@ -217,6 +268,10 @@ impl Database {
               oss_bucket = excluded.oss_bucket,
               oss_endpoint = excluded.oss_endpoint,
               oss_public_domain = excluded.oss_public_domain,
+              watermark_path = excluded.watermark_path,
+              shop_role = excluded.shop_role,
+              follows_shop_id = excluded.follows_shop_id,
+              follow_warehouse_id = excluded.follow_warehouse_id,
               api_key_plain = excluded.api_key_plain,
               oss_secret_plain = excluded.oss_secret_plain,
               enabled = excluded.enabled,
@@ -232,6 +287,10 @@ impl Database {
                 empty_to_none(draft.oss_bucket),
                 empty_to_none(draft.oss_endpoint),
                 empty_to_none(draft.oss_public_domain),
+                empty_to_none(draft.watermark_path),
+                shop_role,
+                follows_shop_id,
+                follow_warehouse_id,
                 api_key_plain,
                 oss_plain,
                 if draft.enabled { 1 } else { 0 },
@@ -253,6 +312,7 @@ impl Database {
     pub fn delete_shop(&self, id: &str) -> Result<()> {
         secrets::delete_secret(&secrets::ozon_api_key_id(id))?;
         secrets::delete_secret(&secrets::oss_secret_key_id(id))?;
+        secrets::delete_secret(&secrets::ozon_seller_cookie_id(id))?;
         self.conn
             .execute("DELETE FROM shops WHERE id = ?1", params![id])?;
         Ok(())
@@ -405,6 +465,80 @@ impl Database {
     }
 
     pub fn shop_oss_secret(&self, shop_id: &str) -> Result<String> {
+        let (_, secret) = self.shop_with_effective_oss(shop_id)?;
+        Ok(secret)
+    }
+
+    pub fn shop_seller_cookie(&self, shop_id: &str) -> Result<String> {
+        secrets::get_secret(&secrets::ozon_seller_cookie_id(shop_id))
+    }
+
+    pub fn save_shop_seller_cookie(&self, shop_id: &str, cookie: &str) -> Result<Shop> {
+        self.get_shop(shop_id)?;
+        secrets::set_secret(&secrets::ozon_seller_cookie_id(shop_id), cookie)?;
+        self.get_shop(shop_id)
+    }
+
+    pub fn shop_with_effective_oss(&self, shop_id: &str) -> Result<(Shop, String)> {
+        let mut shop = self.get_shop(shop_id)?;
+        let oss_source = self.effective_oss_source(&shop)?;
+        let secret = self.shop_oss_secret_direct(&oss_source.id)?;
+        shop.oss_access_key_id = oss_source.oss_access_key_id;
+        shop.oss_access_key_stored = true;
+        shop.oss_bucket = oss_source.oss_bucket;
+        shop.oss_endpoint = oss_source.oss_endpoint;
+        shop.oss_public_domain = oss_source.oss_public_domain;
+        Ok((shop, secret))
+    }
+
+    fn effective_oss_source(&self, shop: &Shop) -> Result<Shop> {
+        if shop.shop_role.as_deref() == Some("follower") {
+            let main_id = shop
+                .follows_shop_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("跟卖店铺未选择主店，无法复用主店 OSS")?;
+            let main = self.get_shop(main_id)?;
+            if self.shop_has_complete_oss(&main) && self.shop_oss_secret_direct(&main.id).is_ok() {
+                return Ok(main);
+            }
+            anyhow::bail!("主店 OSS 配置不完整，无法复用");
+        }
+
+        if self.shop_has_complete_oss(shop) && self.shop_oss_secret_direct(&shop.id).is_ok() {
+            return Ok(shop.clone());
+        }
+
+        self.list_shops()?
+            .into_iter()
+            .find(|candidate| {
+                candidate.enabled
+                    && candidate.shop_role.as_deref() != Some("follower")
+                    && self.shop_has_complete_oss(candidate)
+                    && self.shop_oss_secret_direct(&candidate.id).is_ok()
+            })
+            .context("未找到可复用的主店 OSS 配置")
+    }
+
+    fn shop_has_complete_oss(&self, shop: &Shop) -> bool {
+        !shop
+            .oss_access_key_id
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+            && !shop.oss_bucket.as_deref().unwrap_or("").trim().is_empty()
+            && !shop.oss_endpoint.as_deref().unwrap_or("").trim().is_empty()
+            && !shop
+                .oss_public_domain
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+    }
+
+    fn shop_oss_secret_direct(&self, shop_id: &str) -> Result<String> {
         let shop = self.get_shop(shop_id)?;
         if let Ok(secret) = secrets::get_secret(&secrets::oss_secret_key_id(&shop.id)) {
             return Ok(secret);
@@ -454,6 +588,59 @@ mod tests {
 
         db.delete_template(&saved.id).unwrap();
         assert!(db.list_templates("product_import").unwrap().is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn follower_reuses_main_shop_oss() {
+        let path = std::env::temp_dir().join(format!("ozon-sjsq-test-{}.sqlite3", Uuid::new_v4()));
+        let db = Database::open_at(path.clone()).unwrap();
+        let main = db
+            .save_shop(ShopDraft {
+                id: None,
+                name: "主店".into(),
+                client_id: "main-client".into(),
+                api_key: Some("main-api".into()),
+                oss_access_key_id: Some("main-oss-key".into()),
+                oss_access_key_secret: Some("main-oss-secret".into()),
+                oss_bucket: Some("main-bucket".into()),
+                oss_endpoint: Some("oss-cn.example.com".into()),
+                oss_public_domain: Some("https://cdn.example.com".into()),
+                watermark_path: None,
+                shop_role: Some("main".into()),
+                follows_shop_id: None,
+                follow_warehouse_id: None,
+                enabled: true,
+            })
+            .unwrap();
+        let follower = db
+            .save_shop(ShopDraft {
+                id: None,
+                name: "跟卖店".into(),
+                client_id: "follower-client".into(),
+                api_key: Some("follower-api".into()),
+                oss_access_key_id: None,
+                oss_access_key_secret: None,
+                oss_bucket: None,
+                oss_endpoint: None,
+                oss_public_domain: None,
+                watermark_path: None,
+                shop_role: Some("follower".into()),
+                follows_shop_id: Some(main.id.clone()),
+                follow_warehouse_id: Some(42),
+                enabled: true,
+            })
+            .unwrap();
+
+        let (effective_shop, secret) = db.shop_with_effective_oss(&follower.id).unwrap();
+        assert_eq!(effective_shop.client_id, "follower-client");
+        assert_eq!(
+            effective_shop.oss_access_key_id.as_deref(),
+            Some("main-oss-key")
+        );
+        assert_eq!(effective_shop.oss_bucket.as_deref(), Some("main-bucket"));
+        assert_eq!(effective_shop.follow_warehouse_id, Some(42));
+        assert_eq!(secret, "main-oss-secret");
         let _ = std::fs::remove_file(path);
     }
 }

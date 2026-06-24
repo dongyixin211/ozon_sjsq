@@ -5,6 +5,7 @@ pub mod business;
 pub mod commands;
 pub mod db;
 pub mod excel;
+pub mod follow;
 pub mod jobs;
 pub mod media;
 pub mod models;

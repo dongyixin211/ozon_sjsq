@@ -1,5 +1,5 @@
 use crate::core::models::{
-    CategoryOption, OzonProductRow, ProductAnalyticsRow, WarehouseOption,
+    CategoryOption, OrderPostingRow, OzonProductRow, ProductAnalyticsRow, WarehouseOption,
 };
 use anyhow::{Context, Result};
 use reqwest::Client;
@@ -128,7 +128,8 @@ impl OzonSellerClient {
                 }),
             )
             .await?;
-        self.enrich_analytics_rows(parse_analytics_rows(&data)).await
+        self.enrich_analytics_rows(parse_analytics_rows(&data))
+            .await
     }
 
     async fn enrich_analytics_rows(
@@ -265,7 +266,11 @@ impl OzonSellerClient {
                 .and_then(Value::as_i64)
                 .unwrap_or(last_value_id);
             items.extend(batch);
-            if !data.get("has_next").and_then(Value::as_bool).unwrap_or(false) {
+            if !data
+                .get("has_next")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 break;
             }
         }
@@ -279,8 +284,79 @@ impl OzonSellerClient {
                 json!({"filter": {"visibility": visibility}, "last_id": "", "limit": limit.clamp(1, 1000)}),
             )
             .await?;
-        let mut rows = extract_items(&data).into_iter().map(product_row).collect::<Vec<_>>();
+        let mut rows = extract_items(&data)
+            .into_iter()
+            .map(product_row)
+            .collect::<Vec<_>>();
         self.attach_product_barcodes(&mut rows).await?;
+        Ok(rows)
+    }
+
+    pub async fn list_all_products_by_visibility(
+        &self,
+        visibility: &str,
+        include_barcodes: bool,
+    ) -> Result<Vec<OzonProductRow>> {
+        let mut rows = Vec::new();
+        let mut last_id = String::new();
+
+        loop {
+            let data = self
+                .request_json(
+                    "/v3/product/list",
+                    json!({"filter": {"visibility": visibility}, "last_id": last_id, "limit": 1000}),
+                )
+                .await?;
+            let batch = extract_items(&data)
+                .into_iter()
+                .map(product_row)
+                .collect::<Vec<_>>();
+            if batch.is_empty() {
+                break;
+            }
+            rows.extend(batch);
+
+            let next_last_id = extract_last_id(&data).unwrap_or_default();
+            if next_last_id.trim().is_empty() || next_last_id == last_id {
+                break;
+            }
+            last_id = next_last_id;
+        }
+
+        if include_barcodes {
+            self.attach_product_barcodes(&mut rows).await?;
+        }
+        Ok(rows)
+    }
+
+    pub async fn list_all_products(&self) -> Result<Vec<OzonProductRow>> {
+        let mut rows = Vec::new();
+        let mut last_id = String::new();
+
+        loop {
+            let data = self
+                .request_json(
+                    "/v3/product/list",
+                    json!({"filter": {"visibility": "ALL"}, "last_id": last_id, "limit": 1000}),
+                )
+                .await?;
+            let batch = extract_items(&data)
+                .into_iter()
+                .map(product_row)
+                .collect::<Vec<_>>();
+            if batch.is_empty() {
+                break;
+            }
+            rows.extend(batch);
+
+            let next_last_id = extract_last_id(&data).unwrap_or_default();
+            if next_last_id.trim().is_empty() || next_last_id == last_id {
+                break;
+            }
+            last_id = next_last_id;
+        }
+
+        self.enrich_prices(&mut rows).await?;
         Ok(rows)
     }
 
@@ -429,14 +505,14 @@ impl OzonSellerClient {
                 if offer_id.is_empty() {
                     continue;
                 }
-                let has_barcode = item
-                    .get("barcodes")
-                    .and_then(Value::as_array)
-                    .is_some_and(|items| {
-                        items
-                            .iter()
-                            .any(|value| value.as_str().is_some_and(|text| !text.trim().is_empty()))
-                    });
+                let has_barcode =
+                    item.get("barcodes")
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| {
+                            items.iter().any(|value| {
+                                value.as_str().is_some_and(|text| !text.trim().is_empty())
+                            })
+                        });
                 barcodes_by_offer.insert(offer_id, has_barcode);
             }
         }
@@ -591,8 +667,7 @@ impl OzonSellerClient {
             }
         }
 
-        let mut category_groups: BTreeMap<(i64, i64), Vec<(i64, String, Value)>> =
-            BTreeMap::new();
+        let mut category_groups: BTreeMap<(i64, i64), Vec<(i64, String, Value)>> = BTreeMap::new();
         let mut skipped = Vec::new();
         for product_id in product_ids {
             let Some(detail) = details_by_id.get(&product_id) else {
@@ -636,8 +711,7 @@ impl OzonSellerClient {
                     }));
                     continue;
                 }
-                let group_value =
-                    format!("AUTO-{category_id}-{type_id}-{timestamp}-{}", index + 1);
+                let group_value = format!("AUTO-{category_id}-{type_id}-{timestamp}-{}", index + 1);
                 let mut group_product_ids = Vec::new();
                 let mut group_update_items = Vec::new();
                 for (product_id, offer_id, attrs) in chunk {
@@ -759,6 +833,38 @@ impl OzonSellerClient {
             offset += 1000;
         }
         Ok(json!({ "result": { "postings": matched } }))
+    }
+
+    pub async fn fbs_posting_list(
+        &self,
+        since: String,
+        to: String,
+        status: String,
+        limit: u32,
+    ) -> Result<Vec<OrderPostingRow>> {
+        let mut filter = serde_json::Map::new();
+        filter.insert("since".into(), json!(since));
+        filter.insert("to".into(), json!(to));
+        if !status.trim().is_empty() {
+            filter.insert("status".into(), json!(status.trim()));
+        }
+
+        let data = self
+            .request_json(
+                "/v3/posting/fbs/list",
+                json!({
+                    "dir": "DESC",
+                    "filter": filter,
+                    "limit": limit.clamp(1, 1000),
+                    "offset": 0,
+                    "with": fbs_list_with_barcodes()
+                }),
+            )
+            .await?;
+        Ok(extract_fbs_postings(&data)
+            .into_iter()
+            .filter_map(order_posting_row)
+            .collect())
     }
 
     pub async fn import_products(&self, items: Vec<Value>) -> Result<Value> {
@@ -895,7 +1001,7 @@ fn fbs_list_with_barcodes() -> Value {
     json!({
         "analytics_data": false,
         "barcodes": true,
-        "financial_data": false,
+        "financial_data": true,
         "legal_info": false,
         "translit": false
     })
@@ -909,6 +1015,88 @@ fn extract_fbs_postings(data: &Value) -> Vec<Value> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
+}
+
+fn order_posting_row(item: Value) -> Option<OrderPostingRow> {
+    let posting_number = item
+        .get("posting_number")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if posting_number.is_empty() {
+        return None;
+    }
+    let products = item
+        .get("products")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let offer_ids = products
+        .iter()
+        .filter_map(|product| product.get("offer_id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    Some(OrderPostingRow {
+        shop_id: None,
+        shop_name: None,
+        posting_number,
+        order_number: item
+            .get("order_number")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        order_id: item.get("order_id").and_then(value_as_i64),
+        status: item
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        in_process_at: item
+            .get("in_process_at")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        shipment_date: item
+            .get("shipment_date")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        products_count: products.len(),
+        offer_ids,
+        sales_amount: posting_sales_amount(&item),
+        currency_code: posting_currency_code(&item),
+    })
+}
+
+fn posting_sales_amount(item: &Value) -> Option<f64> {
+    let products = item.get("products").and_then(Value::as_array)?;
+    let mut total = 0.0;
+    let mut found = false;
+    for product in products {
+        if let Some(price) = product
+            .get("price")
+            .or_else(|| product.get("offer_price"))
+            .or_else(|| product.get("total_price"))
+            .and_then(value_as_f64)
+        {
+            total += price;
+            found = true;
+        }
+    }
+    found.then_some(total)
+}
+
+fn posting_currency_code(item: &Value) -> Option<String> {
+    item.get("products")
+        .and_then(Value::as_array)
+        .and_then(|products| {
+            products.iter().find_map(|product| {
+                product
+                    .get("currency_code")
+                    .or_else(|| product.get("currencyCode"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+        })
 }
 
 fn fbs_list_has_next(data: &Value) -> bool {
@@ -1042,6 +1230,14 @@ fn value_as_i64(value: &Value) -> Option<i64> {
     value
         .as_i64()
         .or_else(|| value.as_str().and_then(|text| text.parse::<i64>().ok()))
+}
+
+fn value_as_f64(value: &Value) -> Option<f64> {
+    value.as_f64().or_else(|| {
+        value
+            .as_str()
+            .and_then(|text| text.trim().replace(',', ".").parse::<f64>().ok())
+    })
 }
 
 fn extract_last_id(data: &Value) -> Option<String> {

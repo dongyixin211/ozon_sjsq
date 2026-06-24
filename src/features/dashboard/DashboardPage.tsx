@@ -1,5 +1,6 @@
 import { ArrowRight, CheckCircle2, FolderOpen, Play, Settings, XCircle } from "lucide-react";
-import type { AppSettings, JobSummary, ProviderSecretStatus, ReadinessCheck, Shop } from "@shared/types";
+import { useEffect, useState } from "react";
+import type { AppSettings, JobSummary, OrderPostingRow, ProviderSecretStatus, ReadinessCheck, Shop } from "@shared/types";
 import { api } from "../../lib/api";
 import { formatDate, jobKindText, statusText } from "../../lib/format";
 
@@ -8,11 +9,13 @@ interface Props {
   jobs: JobSummary[];
   settings: AppSettings;
   providerSecrets: ProviderSecretStatus;
-  onNavigate: (page: "materials" | "scene" | "ozon" | "jobs" | "settings") => void;
+  onNavigate: (page: "materials" | "ozon" | "orders" | "jobs" | "settings") => void;
   onOpenJobLogs: (jobId: string) => void;
 }
 
 export function DashboardPage({ shops, jobs, settings, providerSecrets, onNavigate, onOpenJobLogs }: Props) {
+  const [orderRows, setOrderRows] = useState<OrderPostingRow[]>([]);
+  const [orderError, setOrderError] = useState("");
   const activeShops = shops.filter((shop) => shop.enabled);
   const runningJobs = jobs.filter((job) => job.status === "running" || job.status === "queued");
   const lastJobs = jobs.slice(0, 5);
@@ -20,6 +23,54 @@ export function DashboardPage({ shops, jobs, settings, providerSecrets, onNaviga
   const hasOss = activeShops.some((shop) => shop.ossAccessKeyStored && shop.ossBucket && shop.ossEndpoint);
   const hasDefaultDirs = Boolean(settings.defaultSourceRoot && settings.defaultOutputRoot);
   const aiReady = providerSecrets.imageApiKeyStored || providerSecrets.textApiKeyStored;
+  const today = dateInputValue(0);
+
+  useEffect(() => {
+    if (activeShops.length === 0) {
+      setOrderRows([]);
+      return;
+    }
+    let cancelled = false;
+    Promise.allSettled(activeShops.map((shop) => api.listOrderPostings({
+      shopId: shop.id,
+      dateFrom: today,
+      dateTo: today,
+      limit: 1000,
+    }))).then((results) => {
+      if (cancelled) return;
+      const rows: OrderPostingRow[] = [];
+      const errors: string[] = [];
+      results.forEach((result, index) => {
+        const shop = activeShops[index];
+        if (result.status === "fulfilled") {
+          rows.push(...result.value.map((row) => ({
+            ...row,
+            shopId: row.shopId ?? shop.id,
+            shopName: row.shopName ?? shop.name,
+          })));
+        } else {
+          errors.push(`${shop.name}: ${String(result.reason)}`);
+        }
+      });
+      setOrderRows(rows);
+      setOrderError(errors.join("\n"));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [shops.map((shop) => `${shop.id}:${shop.updatedAt}:${shop.enabled}`).join("|"), today]);
+
+  const orderSummaryRows = activeShops.map((shop) => {
+    const rows = orderRows.filter((row) => row.shopId === shop.id);
+    return {
+      shop,
+      count: rows.length,
+      sales: rows.reduce((sum, row) => sum + (row.salesAmount ?? 0), 0),
+      currency: rows.find((row) => row.currencyCode)?.currencyCode ?? "RUB",
+    };
+  });
+  const totalOrderCount = orderSummaryRows.reduce((sum, row) => sum + row.count, 0);
+  const totalSales = orderSummaryRows.reduce((sum, row) => sum + row.sales, 0);
 
   const readiness: ReadinessCheck[] = [
     {
@@ -78,6 +129,13 @@ export function DashboardPage({ shops, jobs, settings, providerSecrets, onNaviga
       action: () => onNavigate(activeShops.length > 0 && hasOzonKey ? "ozon" : "settings"),
       actionLabel: activeShops.length > 0 && hasOzonKey ? "进入更新" : "先配 Ozon",
     },
+    {
+      title: "查询订单",
+      detail: "查看所有店铺订单、销售额，并按店铺下载订单文件。",
+      ready: activeShops.length > 0 && hasOzonKey,
+      action: () => onNavigate(activeShops.length > 0 && hasOzonKey ? "orders" : "settings"),
+      actionLabel: activeShops.length > 0 && hasOzonKey ? "进入订单" : "先配 Ozon",
+    },
   ];
 
   return (
@@ -122,6 +180,33 @@ export function DashboardPage({ shops, jobs, settings, providerSecrets, onNaviga
 
       <section className="panel">
         <div className="panel-header">
+          <div>
+            <h2>今日店铺订单</h2>
+            <p className="muted">{today}，所有启用店铺合计 {totalOrderCount} 单，销售额 {formatMoney(totalSales)}。</p>
+          </div>
+          <button className="secondary-button" onClick={() => onNavigate("orders")}>查看订单</button>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>店铺</th><th>单量</th><th>销售额</th><th>Cookie</th></tr></thead>
+            <tbody>
+              {orderSummaryRows.map((row) => (
+                <tr key={row.shop.id}>
+                  <td>{row.shop.name}</td>
+                  <td>{row.count}</td>
+                  <td>{formatMoney(row.sales, row.currency)}</td>
+                  <td>{row.shop.ozonSellerCookieStored ? "已保存" : "未保存"}</td>
+                </tr>
+              ))}
+              {orderSummaryRows.length === 0 ? <tr><td colSpan={4} className="muted">暂无启用店铺。</td></tr> : null}
+            </tbody>
+          </table>
+        </div>
+        {orderError ? <pre className="long-output">{orderError}</pre> : null}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
           <h2>最近任务</h2>
           <button className="secondary-button" onClick={() => onNavigate("jobs")}>查看全部</button>
         </div>
@@ -161,7 +246,7 @@ export function DashboardPage({ shops, jobs, settings, providerSecrets, onNaviga
                           <FolderOpen size={15} /> 结果
                         </button>
                       ) : null}
-                      <button className="secondary-button" onClick={() => onNavigate(job.kind === "materials" ? "materials" : job.kind === "scene_local" ? "scene" : "ozon")}>
+                      <button className="secondary-button" onClick={() => onNavigate(job.kind === "materials" || job.kind === "scene_local" ? "materials" : "ozon")}>
                         继续 <ArrowRight size={15} />
                       </button>
                     </div>
@@ -177,4 +262,14 @@ export function DashboardPage({ shops, jobs, settings, providerSecrets, onNaviga
       </section>
     </div>
   );
+}
+
+function dateInputValue(daysAgo: number) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - daysAgo);
+  return date.toISOString().slice(0, 10);
+}
+
+function formatMoney(value: number, currency = "RUB") {
+  return `${value.toFixed(2).replace(/\.00$/, "")} ${currency}`;
 }

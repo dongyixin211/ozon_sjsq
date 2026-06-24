@@ -1,15 +1,17 @@
+use crate::core::db::Database;
 use crate::core::excel;
 use crate::core::models::{
-    AppSettings, AppSnapshot, BatchUploadRequest, CategoryOption, ImageRenameRequest,
-    ImageRenameResult, ImportPreviewInput, JobKind, JobLog, JobSummary, ListedUpdateRequest,
-    LocalSceneRequest, MaterialsRequest, OrderDocumentsRequest, OzonProductRow, PreflightIssue,
-    ProductAnalyticsRow, ProviderSecretDraft, ProviderSecretStatus, Shop, ShopDraft,
-    SkuFolderReport, SkuFolderRow, TemplateDraft, TemplateSummary, WarehouseOption,
+    AppSettings, AppSnapshot, BatchUploadRequest, CategoryOption, FollowAutomationRequest,
+    ImageRenameRequest, ImageRenameResult, ImportPreviewInput, JobKind, JobLog, JobSummary,
+    ListedUpdateRequest, LocalSceneRequest, MaterialsRequest, OrderDocumentsRequest,
+    OrderListRequest, OrderPostingRow, OzonProductRow, PreflightIssue, ProductAnalyticsRow,
+    ProviderSecretDraft, ProviderSecretStatus, Shop, ShopDraft, SkuFolderReport, SkuFolderRow,
+    TemplateDraft, TemplateSummary, WarehouseOption,
 };
 use crate::core::oss::AliyunOssClient;
 use crate::core::ozon::OzonSellerClient;
 use crate::core::secrets;
-use crate::core::{ai, batch, business, media, order_docs};
+use crate::core::{ai, batch, business, follow, media, order_docs};
 use crate::AppState;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -590,7 +592,10 @@ pub fn start_batch_upload(
             .map(|shop_id| {
                 let shop = db.get_shop(shop_id).map_err(to_string)?;
                 let ozon_api_key = db.shop_api_key(shop_id).map_err(to_string)?;
-                let oss_secret = db.shop_oss_secret(shop_id).ok();
+                let (shop, oss_secret) = db
+                    .shop_with_effective_oss(shop_id)
+                    .map(|(effective_shop, secret)| (effective_shop, Some(secret)))
+                    .unwrap_or((shop, None));
                 Ok(batch::RuntimeShopConfig {
                     shop,
                     ozon_api_key,
@@ -638,10 +643,17 @@ pub fn preflight_materials(
             Ok(report) => issues.push(issue(
                 "info",
                 "源目录",
-                &format!(
-                    "将处理 {} 个 SKU、{} 张图片",
-                    report.sku_count, report.image_count
-                ),
+                &if request.generate_ai_images
+                    && !request.convert_originals
+                    && !request.generate_copy
+                {
+                    format!("将处理 {} 个 SKU 的首张图片", report.sku_count)
+                } else {
+                    format!(
+                        "将处理 {} 个 SKU、{} 张图片",
+                        report.sku_count, report.image_count
+                    )
+                },
                 "",
                 "",
             )),
@@ -738,6 +750,7 @@ pub fn preflight_batch_upload(
             "ozon",
         ));
     }
+    check_shop_watermarks(&shops, &mut issues);
     if let Err(message) = validate_auto_upload_options(&request) {
         issues.push(issue(
             "error",
@@ -860,9 +873,7 @@ pub async fn test_oss_upload(
             .db
             .lock()
             .map_err(|_| "数据库状态锁定失败".to_string())?;
-        let shop = db.get_shop(&shop_id).map_err(to_string)?;
-        let oss_secret = db.shop_oss_secret(&shop_id).map_err(to_string)?;
-        (shop, oss_secret)
+        db.shop_with_effective_oss(&shop_id).map_err(to_string)?
     };
     let client = AliyunOssClient::new(
         runtime.0.oss_access_key_id.unwrap_or_default(),
@@ -894,7 +905,10 @@ pub fn start_listed_update(
             .map_err(|_| "数据库状态锁定失败".to_string())?;
         let shop = db.get_shop(&request.shop_id).map_err(to_string)?;
         let ozon_api_key = db.shop_api_key(&request.shop_id).map_err(to_string)?;
-        let oss_secret = db.shop_oss_secret(&request.shop_id).ok();
+        let (shop, oss_secret) = db
+            .shop_with_effective_oss(&request.shop_id)
+            .map(|(effective_shop, secret)| (effective_shop, Some(secret)))
+            .unwrap_or((shop, None));
         batch::RuntimeShopConfig {
             shop,
             ozon_api_key,
@@ -931,6 +945,27 @@ pub fn start_order_documents(
             .map_err(|_| "数据库状态锁定失败".to_string())?;
         request.ozon_company_id = Some(db.get_shop(&request.shop_id).map_err(to_string)?.client_id);
     }
+    if request
+        .ozon_seller_har_path
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+        && request
+            .ozon_seller_cookie_path
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+    {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        if let Ok(cookie) = db.shop_seller_cookie(&request.shop_id) {
+            request.ozon_seller_cookie_path = Some(cookie);
+        }
+    }
     order_docs::validate_request(&request).map_err(to_string)?;
     let job = state.jobs.create_job(
         JobKind::OrderDocuments,
@@ -946,19 +981,235 @@ pub fn start_order_documents(
 }
 
 #[tauri::command]
+pub fn save_shop_seller_cookie(
+    state: State<'_, AppState>,
+    shop_id: String,
+    cookie: String,
+) -> Result<Shop, String> {
+    if shop_id.trim().is_empty() {
+        return Err("请先选择店铺".into());
+    }
+    let normalized = crate::core::ozon_seller_web::normalize_cookie_input(&cookie)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "请粘贴 Ozon 后台 Cookie".to_string())?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "数据库状态锁定失败".to_string())?;
+    db.save_shop_seller_cookie(&shop_id, &normalized)
+        .map_err(to_string)
+}
+
+#[tauri::command]
+pub async fn list_order_postings(
+    state: State<'_, AppState>,
+    request: OrderListRequest,
+) -> Result<Vec<OrderPostingRow>, String> {
+    if request.shop_id.trim().is_empty() {
+        return Err("请先选择店铺".into());
+    }
+    let shop = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        db.get_shop(&request.shop_id).map_err(to_string)?
+    };
+    let (since, to) = order_date_range(&request.date_from, &request.date_to)?;
+    let mut rows = ozon_client(&state, &request.shop_id)?
+        .fbs_posting_list(
+            since,
+            to,
+            request.status.unwrap_or_default(),
+            request.limit.unwrap_or(100),
+        )
+        .await
+        .map_err(to_string)?;
+    for row in &mut rows {
+        row.shop_id = Some(shop.id.clone());
+        row.shop_name = Some(shop.name.clone());
+    }
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn start_follow_sync(
+    state: State<'_, AppState>,
+    shop_id: String,
+    price_multiplier: Option<f64>,
+) -> Result<JobSummary, String> {
+    if shop_id.trim().is_empty() {
+        return Err("请先选择店铺".into());
+    }
+    let price_multiplier = validate_follow_price_multiplier(price_multiplier)?;
+    let pairs = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        follow_pairs_for_shop(&db, &shop_id)?
+    };
+
+    let job = state
+        .jobs
+        .create_job(JobKind::FollowSync, "跟卖商品同步".into(), Some(shop_id));
+    let jobs = state.jobs.clone();
+    let job_id = job.id.clone();
+    tauri::async_runtime::spawn(follow::run_follow_sync(
+        jobs,
+        job_id,
+        pairs,
+        price_multiplier,
+    ));
+    Ok(job)
+}
+
+#[tauri::command]
+pub fn start_follow_automation(
+    state: State<'_, AppState>,
+    request: FollowAutomationRequest,
+) -> Result<JobSummary, String> {
+    if request.shop_id.trim().is_empty() {
+        return Err("请先选择店铺".into());
+    }
+    let pairs = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        follow_pairs_for_shop(&db, &request.shop_id)?
+    };
+    validate_follow_automation_request(&request)?;
+
+    let job = state.jobs.create_job(
+        JobKind::FollowAutomation,
+        "跟卖自动化".into(),
+        Some(request.shop_id.clone()),
+    );
+    let jobs = state.jobs.clone();
+    let job_id = job.id.clone();
+    tauri::async_runtime::spawn(follow::run_follow_automation(jobs, job_id, pairs, request));
+    Ok(job)
+}
+
+fn follow_pairs_for_shop(
+    db: &Database,
+    shop_id: &str,
+) -> Result<Vec<follow::FollowSyncPair>, String> {
+    let shops = db.list_shops().map_err(to_string)?;
+    let selected = shops
+        .iter()
+        .find(|shop| shop.id == shop_id)
+        .cloned()
+        .ok_or_else(|| "未找到店铺".to_string())?;
+    let runtime_for = |shop: &Shop| -> Result<follow::RuntimeOzonShop, String> {
+        let (effective_shop, oss_secret) = db
+            .shop_with_effective_oss(&shop.id)
+            .unwrap_or_else(|_| (shop.clone(), String::new()));
+        Ok(follow::RuntimeOzonShop {
+            shop: effective_shop,
+            ozon_api_key: db.shop_api_key(&shop.id).map_err(to_string)?,
+            oss_secret: (!oss_secret.is_empty()).then_some(oss_secret),
+        })
+    };
+
+    if selected.shop_role.as_deref() == Some("follower") {
+        let main_id = selected
+            .follows_shop_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "当前跟卖店铺未选择主店".to_string())?;
+        let main = shops
+            .iter()
+            .find(|shop| shop.id == main_id)
+            .ok_or_else(|| "未找到跟卖店铺关联的主店".to_string())?;
+        return Ok(vec![follow::FollowSyncPair {
+            main: runtime_for(main)?,
+            follower: runtime_for(&selected)?,
+        }]);
+    }
+
+    let followers = shops
+        .iter()
+        .filter(|shop| {
+            shop.shop_role.as_deref() == Some("follower")
+                && shop.follows_shop_id.as_deref() == Some(selected.id.as_str())
+        })
+        .collect::<Vec<_>>();
+    if followers.is_empty() {
+        return Err("当前主店下没有跟卖店铺".into());
+    }
+    followers
+        .into_iter()
+        .map(|follower| {
+            Ok(follow::FollowSyncPair {
+                main: runtime_for(&selected)?,
+                follower: runtime_for(follower)?,
+            })
+        })
+        .collect()
+}
+
+fn validate_follow_automation_request(request: &FollowAutomationRequest) -> Result<(), String> {
+    if !(request.auto_follow_sync
+        || request.auto_update_stock
+        || request.auto_generate_barcode
+        || request.auto_add_to_action)
+    {
+        return Err("请至少选择一个自动执行任务".into());
+    }
+    if request.interval_minutes <= 0 {
+        return Err("定时间隔必须大于 0 分钟".into());
+    }
+    if request.max_follow_items.is_some_and(|value| value < 0) {
+        return Err("跟卖上架上限不能小于 0".into());
+    }
+    validate_follow_price_multiplier(Some(request.price_multiplier))?;
+    if request.auto_update_stock {
+        if request.stock.unwrap_or_default() < 0 {
+            return Err("自动补库存数量不能小于 0".into());
+        }
+    }
+    if request.auto_add_to_action {
+        if request.action_id.is_none() {
+            return Err("启用自动添加活动后，请先选择活动".into());
+        }
+        if request.action_stock.unwrap_or_default() <= 0 {
+            return Err("活动库存必须大于 0".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_follow_price_multiplier(value: Option<f64>) -> Result<f64, String> {
+    let multiplier = value.unwrap_or(follow::DEFAULT_FOLLOW_PRICE_MULTIPLIER);
+    if !multiplier.is_finite() {
+        return Err("跟卖价格倍率不是有效数字".into());
+    }
+    if !(2.0..=10.0).contains(&multiplier) {
+        return Err("跟卖价格倍率只能设置为 2 到 10 倍".into());
+    }
+    Ok(multiplier)
+}
+
+#[tauri::command]
 pub fn start_materials_job(
     state: State<'_, AppState>,
     request: MaterialsRequest,
 ) -> Result<JobSummary, String> {
-    let title =
-        if request.convert_originals && !request.generate_copy && !request.generate_ai_images {
-            "转 3:4 + 水印"
-        } else if request.generate_copy && !request.convert_originals && !request.generate_ai_images
-        {
-            "AI 生成标题"
-        } else {
-            "素材生成与 3:4 转图"
-        };
+    let title = if request.generate_ai_images
+        && !request.convert_originals
+        && !request.generate_copy
+    {
+        "GPT 图片生成"
+    } else if request.convert_originals && !request.generate_copy && !request.generate_ai_images {
+        "转 3:4 + 水印"
+    } else if request.generate_copy && !request.convert_originals && !request.generate_ai_images {
+        "AI 生成标题"
+    } else {
+        "素材生成与 3:4 转图"
+    };
     let job = state.jobs.create_job(
         JobKind::Materials,
         title.into(),
@@ -1211,6 +1462,27 @@ fn clean_product_ids(values: Vec<i64>) -> Vec<i64> {
         .collect()
 }
 
+fn order_date_range(date_from: &str, date_to: &str) -> Result<(String, String), String> {
+    let from = chrono::NaiveDate::parse_from_str(date_from.trim(), "%Y-%m-%d")
+        .map_err(|_| "订单开始日期格式不正确".to_string())?;
+    let to = chrono::NaiveDate::parse_from_str(date_to.trim(), "%Y-%m-%d")
+        .map_err(|_| "订单结束日期格式不正确".to_string())?;
+    if from > to {
+        return Err("订单开始日期不能晚于结束日期".into());
+    }
+    let since = from
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| "订单开始日期无效".to_string())?
+        .and_utc()
+        .to_rfc3339();
+    let to = to
+        .and_hms_opt(23, 59, 59)
+        .ok_or_else(|| "订单结束日期无效".to_string())?
+        .and_utc()
+        .to_rfc3339();
+    Ok((since, to))
+}
+
 fn build_category_price_payloads(
     products: &[OzonProductRow],
     price: &str,
@@ -1335,26 +1607,12 @@ fn shops_for_preflight(
                     )),
                 }
                 if require_oss {
-                    let missing_oss = shop
-                        .oss_access_key_id
-                        .as_deref()
-                        .unwrap_or("")
-                        .trim()
-                        .is_empty()
-                        || shop.oss_bucket.as_deref().unwrap_or("").trim().is_empty()
-                        || shop.oss_endpoint.as_deref().unwrap_or("").trim().is_empty()
-                        || shop
-                            .oss_public_domain
-                            .as_deref()
-                            .unwrap_or("")
-                            .trim()
-                            .is_empty()
-                        || db.shop_oss_secret(shop_id).is_err();
+                    let missing_oss = db.shop_with_effective_oss(shop_id).is_err();
                     if missing_oss {
                         issues.push(issue(
                             "error",
                             &shop.name,
-                            "OSS 配置不完整，无法上传图片",
+                            "OSS 配置不完整，请先在主店配置 OSS",
                             "去设置",
                             "settings",
                         ));
@@ -1371,6 +1629,35 @@ fn shops_for_preflight(
         }
     }
     Ok(shops)
+}
+
+fn check_shop_watermarks(shops: &[(Shop, String)], issues: &mut Vec<PreflightIssue>) {
+    for (shop, _) in shops {
+        let Some(path) = shop
+            .watermark_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            issues.push(issue(
+                "error",
+                &shop.name,
+                "店铺水印图片未配置，上架前必须先设置每店水印",
+                "去设置",
+                "settings",
+            ));
+            continue;
+        };
+        if !PathBuf::from(path).is_file() {
+            issues.push(issue(
+                "error",
+                &shop.name,
+                &format!("店铺水印图片不存在: {path}"),
+                "去设置",
+                "settings",
+            ));
+        }
+    }
 }
 
 fn check_excel_and_images(
@@ -1479,7 +1766,10 @@ fn check_excel_and_images(
         issues.push(issue(
             "warn",
             "SKU 匹配",
-            &format!("{} 个 Excel SKU 没有对应图片文件夹，开始后会自动跳过", missing_images),
+            &format!(
+                "{} 个 Excel SKU 没有对应图片文件夹，开始后会自动跳过",
+                missing_images
+            ),
             "检查图片目录",
             "ozon",
         ));

@@ -13,6 +13,11 @@ pub struct Shop {
     pub oss_bucket: Option<String>,
     pub oss_endpoint: Option<String>,
     pub oss_public_domain: Option<String>,
+    pub watermark_path: Option<String>,
+    pub shop_role: Option<String>,
+    pub follows_shop_id: Option<String>,
+    pub follow_warehouse_id: Option<i64>,
+    pub ozon_seller_cookie_stored: bool,
     pub api_key_plain: Option<String>,
     pub oss_secret_plain: Option<String>,
     pub enabled: bool,
@@ -32,6 +37,10 @@ pub struct ShopDraft {
     pub oss_bucket: Option<String>,
     pub oss_endpoint: Option<String>,
     pub oss_public_domain: Option<String>,
+    pub watermark_path: Option<String>,
+    pub shop_role: Option<String>,
+    pub follows_shop_id: Option<String>,
+    pub follow_warehouse_id: Option<i64>,
     pub enabled: bool,
 }
 
@@ -94,9 +103,9 @@ impl Default for AppSettings {
             upload_excel_path: String::new(),
             upload_max_items: 100,
             listed_update_max_workers: 2,
-            image_provider: "xiaoqian".into(),
+            image_provider: "pixel".into(),
             text_provider: "xiaoqian".into(),
-            image_base_url: "https://xiaoqian.art/v1".into(),
+            image_base_url: "https://ai-pixel.online/v1".into(),
             text_base_url: "https://xiaoqian.art/v1".into(),
             image_model: "gpt-image-2".into(),
             text_model: "gpt-5-high".into(),
@@ -194,6 +203,8 @@ pub enum JobKind {
     SceneAi,
     BatchUpload,
     ListedUpdate,
+    FollowSync,
+    FollowAutomation,
     Inventory,
     Barcode,
     OrderDocuments,
@@ -282,6 +293,55 @@ pub struct OrderDocumentsRequest {
     pub baidu_search_dir: Option<String>,
     pub baidu_recursive: bool,
     pub download_materials: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderListRequest {
+    pub shop_id: String,
+    pub date_from: String,
+    pub date_to: String,
+    pub status: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderPostingRow {
+    pub shop_id: Option<String>,
+    pub shop_name: Option<String>,
+    pub posting_number: String,
+    pub order_number: Option<String>,
+    pub order_id: Option<i64>,
+    pub status: Option<String>,
+    pub in_process_at: Option<String>,
+    pub shipment_date: Option<String>,
+    pub products_count: usize,
+    pub offer_ids: Vec<String>,
+    pub sales_amount: Option<f64>,
+    pub currency_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowAutomationRequest {
+    pub shop_id: String,
+    pub interval_minutes: i64,
+    pub max_follow_items: Option<i64>,
+    #[serde(default = "default_follow_price_multiplier")]
+    pub price_multiplier: f64,
+    pub auto_follow_sync: bool,
+    pub auto_update_stock: bool,
+    pub auto_generate_barcode: bool,
+    pub auto_add_to_action: bool,
+    pub stock: Option<i64>,
+    pub action_id: Option<i64>,
+    pub action_price: Option<String>,
+    pub action_stock: Option<i64>,
+}
+
+fn default_follow_price_multiplier() -> f64 {
+    3.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

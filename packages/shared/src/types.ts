@@ -6,10 +6,14 @@ export type JobKind =
   | "scene_ai"
   | "batch_upload"
   | "listed_update"
+  | "follow_sync"
+  | "follow_automation"
   | "inventory"
   | "barcode"
   | "order_documents"
   | "api_test";
+
+export type ShopRole = "main" | "follower";
 
 export interface Shop {
   id: string;
@@ -23,6 +27,11 @@ export interface Shop {
   ossBucket?: string;
   ossEndpoint?: string;
   ossPublicDomain?: string;
+  watermarkPath?: string;
+  shopRole?: ShopRole;
+  followsShopId?: string;
+  followWarehouseId?: number;
+  ozonSellerCookieStored: boolean;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -38,6 +47,10 @@ export interface ShopDraft {
   ossBucket?: string;
   ossEndpoint?: string;
   ossPublicDomain?: string;
+  watermarkPath?: string;
+  shopRole?: ShopRole;
+  followsShopId?: string;
+  followWarehouseId?: number;
   enabled: boolean;
 }
 
@@ -233,6 +246,21 @@ export interface ListedUpdateRequest {
   templateVideoLinks: string[];
 }
 
+export interface FollowAutomationRequest {
+  shopId: string;
+  intervalMinutes: number;
+  maxFollowItems?: number;
+  priceMultiplier: number;
+  autoFollowSync: boolean;
+  autoUpdateStock: boolean;
+  autoGenerateBarcode: boolean;
+  autoAddToAction: boolean;
+  stock?: number;
+  actionId?: number;
+  actionPrice?: string;
+  actionStock?: number;
+}
+
 export interface OrderDocumentsRequest {
   shopId: string;
   orderNumbers: string[];
@@ -244,6 +272,29 @@ export interface OrderDocumentsRequest {
   baiduSearchDir?: string;
   baiduRecursive: boolean;
   downloadMaterials: boolean;
+}
+
+export interface OrderListRequest {
+  shopId: string;
+  dateFrom: string;
+  dateTo: string;
+  status?: string;
+  limit?: number;
+}
+
+export interface OrderPostingRow {
+  shopId?: string;
+  shopName?: string;
+  postingNumber: string;
+  orderNumber?: string;
+  orderId?: number;
+  status?: string;
+  inProcessAt?: string;
+  shipmentDate?: string;
+  productsCount: number;
+  offerIds: string[];
+  salesAmount?: number;
+  currencyCode?: string;
 }
 
 export interface MaterialsRequest {

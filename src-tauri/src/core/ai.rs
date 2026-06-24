@@ -150,65 +150,15 @@ impl OpenAiCompatibleClient {
         Ok(models)
     }
 
-    pub async fn generate_image_from_reference(
+    pub async fn edit_image_from_reference(
         &self,
         model: &str,
         prompt: &str,
-        reference_image: Option<&Path>,
+        reference_image: &Path,
         output_path: &Path,
     ) -> Result<()> {
-        if let Some(reference_image) = reference_image {
-            match self
-                .edit_image(model, prompt, reference_image, output_path)
-                .await
-            {
-                Ok(()) => return Ok(()),
-                Err(edit_error) => {
-                    eprintln!("图片编辑失败，回退文生图: {edit_error}");
-                }
-            }
-        }
-        self.generate_image_without_reference(model, prompt, output_path)
+        self.edit_image(model, prompt, reference_image, output_path)
             .await
-    }
-
-    async fn generate_image_without_reference(
-        &self,
-        model: &str,
-        prompt: &str,
-        output_path: &Path,
-    ) -> Result<()> {
-        let response = self
-            .with_auth(
-                self.http
-                    .post(format!("{}/images/generations", self.base_url)),
-            )
-            .json(&json!({
-                "model": model,
-                "prompt": prompt,
-                "size": "1024x1536"
-            }))
-            .send()
-            .await
-            .context("图片接口请求失败")?;
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        if !status.is_success() {
-            anyhow::bail!("图片接口 HTTP {}: {}", status.as_u16(), body);
-        }
-        let data: Value = serde_json::from_str(&body).context("图片接口返回不是合法 JSON")?;
-        if let Some(url) = data.pointer("/data/0/url").and_then(Value::as_str) {
-            download_file(&self.http, url, output_path).await?;
-            return Ok(());
-        }
-        if let Some(b64) = data.pointer("/data/0/b64_json").and_then(Value::as_str) {
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .context("图片 base64 解码失败")?;
-            write_bytes(output_path, &bytes)?;
-            return Ok(());
-        }
-        anyhow::bail!("图片接口未返回 url 或 b64_json")
     }
 
     async fn edit_image(
@@ -218,17 +168,15 @@ impl OpenAiCompatibleClient {
         reference_image: &Path,
         output_path: &Path,
     ) -> Result<()> {
-        let bytes = tokio::fs::read(reference_image)
-            .await
-            .with_context(|| format!("无法读取参考图 {}", reference_image.display()))?;
-        let filename = reference_image
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("reference.png")
-            .to_string();
+        let reference_image = reference_image.to_path_buf();
+        let (bytes, filename, mime) = tauri::async_runtime::spawn_blocking(move || {
+            edit_reference_image_part(&reference_image)
+        })
+        .await
+        .context("图片编辑参考图压缩任务异常退出")??;
         let part = multipart::Part::bytes(bytes)
             .file_name(filename)
-            .mime_str(image_mime(reference_image))?;
+            .mime_str(mime)?;
         let form = multipart::Form::new()
             .text("model", model.to_string())
             .text("prompt", prompt.to_string())
@@ -441,6 +389,29 @@ pub fn is_missing_chat_content_error(error: &anyhow::Error) -> bool {
         .any(|cause| cause.to_string().contains("未返回 message.content"))
 }
 
+pub fn is_retryable_image_error(error: &anyhow::Error) -> bool {
+    let message = error_chain(error).to_lowercase();
+    message.contains("请求失败")
+        || message.contains("connection")
+        || message.contains("timeout")
+        || message.contains("sendrequest")
+        || message.contains("http 408")
+        || message.contains("http 409")
+        || message.contains("http 429")
+        || message.contains("http 500")
+        || message.contains("http 502")
+        || message.contains("http 503")
+        || message.contains("http 504")
+}
+
+fn error_chain(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
 fn chat_message_content(data: &Value, endpoint: &str) -> Result<String> {
     if let Some(content) = data
         .pointer("/choices/0/message/content")
@@ -515,19 +486,28 @@ async fn save_image_response(http: &Client, data: &Value, output_path: &Path) ->
     anyhow::bail!("图片接口未返回 url 或 b64_json")
 }
 
-fn image_mime(path: &Path) -> &'static str {
-    match path
-        .extension()
+fn edit_reference_image_part(path: &Path) -> Result<(Vec<u8>, String, &'static str)> {
+    let image = image::open(path).with_context(|| format!("无法读取参考图 {}", path.display()))?;
+    let (width, height) = image.dimensions();
+    let max_side = width.max(height).max(1);
+    let image = if max_side > 1536 {
+        let ratio = 1536.0 / max_side as f32;
+        let next_width = (width as f32 * ratio).round().max(1.0) as u32;
+        let next_height = (height as f32 * ratio).round().max(1.0) as u32;
+        image.resize(next_width, next_height, FilterType::Triangle)
+    } else {
+        image
+    };
+    let rgb = image.to_rgb8();
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, 88)
+        .encode_image(&rgb)
+        .with_context(|| format!("无法压缩图片编辑参考图 {}", path.display()))?;
+    let stem = path
+        .file_stem()
         .and_then(|value| value.to_str())
-        .map(str::to_lowercase)
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("webp") => "image/webp",
-        Some("bmp") => "image/bmp",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        _ => "application/octet-stream",
-    }
+        .unwrap_or("reference");
+    Ok((bytes, format!("{stem}_reference.jpg"), "image/jpeg"))
 }
 
 fn title_image_base64(path: &Path) -> Result<String> {
