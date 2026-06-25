@@ -38,14 +38,32 @@ npm install
 npm run tauri:dev
 ```
 
-打包：
+macOS 打包：
 
 ```bash
 export PATH="$PWD/.tooling/node/bin:$PATH"
-npm run tauri:build
+npm run tauri:build:mac
 ```
 
-macOS 目标为 `.dmg`，Windows 目标为 `.msi`。
+macOS 目标为 `.dmg`，Windows 目标为 `.msi` 和 NSIS `.exe` 安装器。
+
+## Windows 打包
+
+Windows 版建议在 Windows 10/11 x64 环境或 GitHub Actions 的 `windows-latest` runner 上构建。原因是 Tauri 桌面包包含 Rust 原生依赖、WebView2 和 Windows 安装器工具链，在 macOS 上交叉打包不如 Windows 原生构建稳定。
+
+Windows 本机打包步骤：
+
+```powershell
+npm ci
+npm run tauri:build:windows
+```
+
+构建产物位置：
+
+- `.exe` 安装器：`src-tauri\target\release\bundle\nsis\`
+- `.msi` 安装包：`src-tauri\target\release\bundle\msi\`
+
+仓库已提供 `.github/workflows/build-windows.yml`，推送或手动触发后会上传 Windows 安装包 artifact。
 
 ## Ozon API
 

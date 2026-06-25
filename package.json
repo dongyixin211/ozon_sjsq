@@ -8,6 +8,8 @@
     "tauri:dev": "tauri dev",
     "build": "tsc && vite build",
     "tauri:build": "tauri build",
+    "tauri:build:mac": "tauri build --bundles dmg",
+    "tauri:build:windows": "tauri build --bundles nsis,msi",
     "test": "vitest run"
   },
   "dependencies": {

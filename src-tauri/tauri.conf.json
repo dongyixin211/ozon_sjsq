@@ -25,7 +25,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "msi"],
+    "targets": ["dmg", "msi", "nsis"],
     "category": "Business"
   }
 }

@@ -621,8 +621,19 @@ fn header(headers: &[Value], name: &str) -> Option<String> {
     })
 }
 
+#[cfg(target_os = "macos")]
 fn default_user_agent() -> &'static str {
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+}
+
+#[cfg(target_os = "windows")]
+fn default_user_agent() -> &'static str {
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn default_user_agent() -> &'static str {
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
 }
 
 fn find_chrome_binary() -> Option<PathBuf> {
@@ -632,16 +643,46 @@ fn find_chrome_binary() -> Option<PathBuf> {
     {
         return Some(path);
     }
-    [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|path| path.is_file())
+    let mut candidates = Vec::new();
+    #[cfg(target_os = "macos")]
+    candidates.extend(
+        [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    #[cfg(target_os = "windows")]
+    {
+        for key in ["LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"] {
+            if let Some(base) = std::env::var_os(key).map(PathBuf::from) {
+                candidates.push(
+                    base.join("Google")
+                        .join("Chrome")
+                        .join("Application")
+                        .join("chrome.exe"),
+                );
+                candidates.push(
+                    base.join("Microsoft")
+                        .join("Edge")
+                        .join("Application")
+                        .join("msedge.exe"),
+                );
+            }
+        }
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    candidates.extend(
+        [
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 fn extract_devtools_ws_url(line: &str) -> Option<String> {

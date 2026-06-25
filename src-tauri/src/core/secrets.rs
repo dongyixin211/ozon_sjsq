@@ -65,14 +65,34 @@ pub fn provider_api_key_id(provider_kind: &str, provider_id: &str) -> String {
 }
 
 fn fallback_path() -> Result<PathBuf> {
+    Ok(fallback_base_dir()?.join(SERVICE).join("secrets.json"))
+}
+
+#[cfg(target_os = "macos")]
+fn fallback_base_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("无法定位用户目录"))?;
-    Ok(home
-        .join("Library")
-        .join("Application Support")
-        .join(SERVICE)
-        .join("secrets.json"))
+    Ok(home.join("Library").join("Application Support"))
+}
+
+#[cfg(target_os = "windows")]
+fn fallback_base_dir() -> Result<PathBuf> {
+    std::env::var_os("APPDATA")
+        .or_else(|| std::env::var_os("LOCALAPPDATA"))
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("无法定位 Windows 应用数据目录"))
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn fallback_base_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+        return Ok(path);
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("无法定位用户目录"))?;
+    Ok(home.join(".local").join("share"))
 }
 
 fn read_fallback_secrets() -> Result<BTreeMap<String, String>> {
@@ -148,6 +168,8 @@ mod tests {
     fn fallback_secret_roundtrip() {
         let _guard = ENV_LOCK.lock().unwrap();
         let original_home = std::env::var_os("HOME");
+        let original_appdata = std::env::var_os("APPDATA");
+        let original_localappdata = std::env::var_os("LOCALAPPDATA");
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -158,6 +180,8 @@ mod tests {
         ));
         fs::create_dir_all(&test_home).unwrap();
         std::env::set_var("HOME", &test_home);
+        std::env::set_var("APPDATA", &test_home);
+        std::env::set_var("LOCALAPPDATA", &test_home);
 
         let key = "provider:text:test-provider:api_key";
         set_fallback_secret(key, "test-secret").unwrap();
@@ -169,6 +193,16 @@ mod tests {
             std::env::set_var("HOME", home);
         } else {
             std::env::remove_var("HOME");
+        }
+        if let Some(appdata) = original_appdata {
+            std::env::set_var("APPDATA", appdata);
+        } else {
+            std::env::remove_var("APPDATA");
+        }
+        if let Some(localappdata) = original_localappdata {
+            std::env::set_var("LOCALAPPDATA", localappdata);
+        } else {
+            std::env::remove_var("LOCALAPPDATA");
         }
         let _ = fs::remove_dir_all(test_home);
     }

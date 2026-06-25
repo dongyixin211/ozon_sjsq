@@ -1406,24 +1406,75 @@ pub fn open_url(url: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn pick_directory() -> Result<String, String> {
-    let output = std::process::Command::new("osascript")
-        .args(["-e", r#"POSIX path of (choose folder)"#])
-        .output()
-        .map_err(|e| format!("无法打开文件对话框: {}", e))?;
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        Err("用户取消了选择".into())
-    } else {
-        Ok(path)
-    }
+    #[cfg(target_os = "macos")]
+    return pick_with_osascript(r#"POSIX path of (choose folder)"#);
+
+    #[cfg(target_os = "windows")]
+    return pick_with_powershell(
+        r#"
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = '请选择目录'
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  [Console]::WriteLine($dialog.SelectedPath)
+}
+"#,
+    );
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    Err("目录选择功能暂不支持当前系统，请手动输入路径".into())
 }
 
 #[tauri::command]
 pub fn pick_file() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    return pick_with_osascript(r#"POSIX path of (choose file)"#);
+
+    #[cfg(target_os = "windows")]
+    return pick_with_powershell(
+        r#"
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.CheckFileExists = $true
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  [Console]::WriteLine($dialog.FileName)
+}
+"#,
+    );
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    Err("文件选择功能暂不支持当前系统，请手动输入路径".into())
+}
+
+#[cfg(target_os = "macos")]
+fn pick_with_osascript(script: &str) -> Result<String, String> {
     let output = std::process::Command::new("osascript")
-        .args(["-e", r#"POSIX path of (choose file)"#])
+        .args(["-e", script])
         .output()
         .map_err(|e| format!("无法打开文件对话框: {}", e))?;
+    pick_output_to_path(output)
+}
+
+#[cfg(target_os = "windows")]
+fn pick_with_powershell(script: &str) -> Result<String, String> {
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-STA", "-Command", script])
+        .output()
+        .map_err(|e| format!("无法打开文件对话框: {}", e))?;
+    pick_output_to_path(output)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn pick_output_to_path(output: std::process::Output) -> Result<String, String> {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            return Err("无法打开文件对话框".into());
+        }
+        return Err(format!("无法打开文件对话框: {stderr}"));
+    }
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if path.is_empty() {
         Err("用户取消了选择".into())
