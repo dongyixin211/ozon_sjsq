@@ -111,8 +111,8 @@ pub fn list_sku_images(folder: &Path) -> Result<Vec<PathBuf>> {
             .and_then(|v| v.to_str())
             .unwrap_or_default()
             .to_lowercase();
-        let a_rank = if is_ai_generated_image(a) { 0 } else { 1 };
-        let b_rank = if is_ai_generated_image(b) { 0 } else { 1 };
+        let a_rank = if is_ai_generated_image(a) { 1 } else { 0 };
+        let b_rank = if is_ai_generated_image(b) { 1 } else { 0 };
         (a_rank, a_name).cmp(&(b_rank, b_name))
     });
     Ok(images)

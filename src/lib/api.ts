@@ -1,20 +1,30 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
+  AutoListingRequest,
   BatchUploadRequest,
   CategoryOption,
   FollowAutomationRequest,
+  GalleryUploadRequest,
+  GalleryUploadSelection,
   ImageRenameRequest,
   ImageRenameResult,
   JobKind,
   JobLog,
   JobSummary,
   ListedUpdateRequest,
+  ListingImageRepairRequest,
+  ListingMaintenanceRequest,
+  LocalMockupRenderRequest,
+  LocalMockupRenderResult,
   LocalSceneRequest,
   MaterialsRequest,
   OrderDocumentsRequest,
+  OrderShippingLabelAssignment,
+  OrderShippingLabelDownloadRequest,
   OrderListRequest,
   OrderPostingRow,
+  OzonUploadQuota,
   OzonProductRow,
   PreflightIssue,
   ProductAnalyticsRow,
@@ -22,10 +32,12 @@ import type {
   ProviderSecretStatus,
   Shop,
   ShopDraft,
+  StoredOrderQuery,
   TemplateDraft,
   TemplateSummary,
   WarehouseOption,
 } from "@shared/types";
+import { getCloudToken } from "./cloudApi";
 
 export interface AppSnapshot {
   settings: AppSettings;
@@ -38,6 +50,7 @@ export interface UpdateCategoryProductsRequest {
   shopId: string;
   categoryId: number;
   typeId?: number;
+  cachedProducts?: OzonProductRow[];
   warehouseId?: number;
   stock?: number;
   price?: string;
@@ -47,7 +60,8 @@ export interface UpdateCategoryProductsRequest {
   updatePrice: boolean;
 }
 
-const defaultSettings: AppSettings = {
+export const defaultSettings: AppSettings = {
+  cloudApiBaseUrl: "https://api.dyxtoolai.cn",
   defaultSourceRoot: "",
   defaultOutputRoot: "",
   baiduCookie: "",
@@ -106,13 +120,166 @@ const mockJobs: JobSummary[] = [
 ];
 
 const isTauri = "__TAURI_INTERNALS__" in window;
+const LOCAL_ASSISTANT_URL = "http://127.0.0.1:17641";
+const BROWSER_TEMPLATE_STORE_KEY = "ozon-sjsq:browser-templates:v1";
 
-async function call<T>(command: string, args?: Record<string, unknown>, fallback?: () => T): Promise<T> {
+interface CallOptions {
+  fallbackWhenUnavailable?: boolean;
+}
+
+export interface RunAutoListingPlanNowRequest {
+  accountId: string;
+  cloudApiBaseUrl: string;
+  cloudAuthToken: string;
+  planId?: string;
+  force?: boolean;
+}
+
+export interface SchedulerStatusRequest {
+  accountId: string;
+}
+
+export interface PauseAutoListingPlanRequest {
+  accountId: string;
+  planId: string;
+  paused?: boolean;
+}
+
+export interface AutoListingSchedulerStatus {
+  accountId: string;
+  tickRunning: boolean;
+  planStates: Array<{
+    planId: string;
+    paused: boolean;
+    runId?: string;
+    localJobId?: string;
+    stage?: string;
+    lastError?: string;
+  }>;
+}
+
+async function call<T>(
+  command: string,
+  args?: Record<string, unknown>,
+  fallback?: () => T,
+  options: CallOptions = {},
+): Promise<T> {
   if (isTauri) {
     return invoke<T>(command, args);
   }
-  if (fallback) return fallback();
-  throw new Error(`命令 ${command} 需要在 Tauri 应用内运行`);
+  return callLocalAssistant<T>(command, args, fallback, options);
+}
+
+async function callLocalAssistant<T>(
+  command: string,
+  args?: Record<string, unknown>,
+  fallback?: () => T,
+  options: CallOptions = {},
+): Promise<T> {
+  try {
+    const nextArgs = withCloudAuthToken(command, args);
+    const response = await fetch(`${LOCAL_ASSISTANT_URL}/command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command, args: nextArgs }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = typeof data.message === "string" ? data.message : `本地助手执行失败：HTTP ${response.status}`;
+      throw new Error(message);
+    }
+    return data as T;
+  } catch (error) {
+    if (fallback && (import.meta.env.DEV || options.fallbackWhenUnavailable)) {
+      return fallback();
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`请先打开客户端本地助手，再在浏览器操作。${message}`);
+  }
+}
+
+function withCloudAuthToken(command: string, args?: Record<string, unknown>) {
+  const nextArgs = { ...(args ?? {}) };
+  if (
+    (
+      command === "start_materials_job"
+      || command === "start_gallery_upload_job"
+      || command === "preflight_materials"
+      || command === "preflight_batch_upload"
+      || command === "start_batch_upload"
+      || command === "start_auto_listing"
+      || command === "start_local_mockup_render"
+      || command === "start_listing_image_repair"
+    )
+    && nextArgs.request
+    && typeof nextArgs.request === "object"
+  ) {
+    const token = getCloudToken();
+    if (token) {
+      nextArgs.request = {
+        ...(nextArgs.request as Record<string, unknown>),
+        cloudAuthToken: token,
+      };
+    }
+  }
+  return nextArgs;
+}
+
+function listBrowserTemplates(kind: string): TemplateSummary[] {
+  return readBrowserTemplates()
+    .filter((template) => template.kind === kind)
+    .sort((left, right) => {
+      const updatedDiff = new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+      return updatedDiff || left.name.localeCompare(right.name, "zh-CN");
+    });
+}
+
+function saveBrowserTemplate(draft: TemplateDraft): TemplateSummary {
+  const templates = readBrowserTemplates();
+  const now = new Date().toISOString();
+  const id = draft.id || crypto.randomUUID();
+  const existing = templates.find((template) => template.id === id);
+  const saved: TemplateSummary = {
+    id,
+    kind: draft.kind,
+    name: draft.name,
+    payload: draft.payload,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  writeBrowserTemplates([saved, ...templates.filter((template) => template.id !== id)]);
+  return saved;
+}
+
+function deleteBrowserTemplate(id: string) {
+  writeBrowserTemplates(readBrowserTemplates().filter((template) => template.id !== id));
+}
+
+function readBrowserTemplates(): TemplateSummary[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(BROWSER_TEMPLATE_STORE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(isTemplateSummary) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeBrowserTemplates(templates: TemplateSummary[]) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(BROWSER_TEMPLATE_STORE_KEY, JSON.stringify(templates));
+}
+
+function isTemplateSummary(value: unknown): value is TemplateSummary {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<TemplateSummary>;
+  return typeof item.id === "string"
+    && typeof item.kind === "string"
+    && typeof item.name === "string"
+    && "payload" in item
+    && typeof item.createdAt === "string"
+    && typeof item.updatedAt === "string";
 }
 
 export const api = {
@@ -149,6 +316,13 @@ export const api = {
       shopRole: draft.shopRole ?? "main",
       followsShopId: draft.followsShopId,
       followWarehouseId: draft.followWarehouseId,
+      maintenanceWarehouseId: draft.maintenanceWarehouseId,
+      maintenanceStock: draft.maintenanceStock ?? 50,
+      maintenanceStockEnabled: draft.maintenanceStockEnabled ?? true,
+      maintenanceBarcodeEnabled: draft.maintenanceBarcodeEnabled ?? true,
+      maintenanceActionEnabled: draft.maintenanceActionEnabled ?? Boolean(draft.maintenanceActionConfigs?.length),
+      maintenanceIntervalMinutes: draft.maintenanceIntervalMinutes ?? 5,
+      maintenanceActionConfigs: draft.maintenanceActionConfigs ?? [],
       ozonSellerCookieStored: false,
       enabled: draft.enabled,
       createdAt: new Date().toISOString(),
@@ -156,21 +330,19 @@ export const api = {
     })),
   deleteShop: (id: string) => call<void>("delete_shop", { id }, () => undefined),
   listTemplates: (kind: string) =>
-    call<TemplateSummary[]>("list_templates", { kind }, () => []),
+    call<TemplateSummary[]>("list_templates", { kind }, () => listBrowserTemplates(kind), { fallbackWhenUnavailable: true }),
   saveTemplate: (draft: TemplateDraft) =>
-    call<TemplateSummary>("save_template", { draft }, () => ({
-      id: draft.id ?? crypto.randomUUID(),
-      kind: draft.kind,
-      name: draft.name,
-      payload: draft.payload,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    })),
-  deleteTemplate: (id: string) => call<void>("delete_template", { id }, () => undefined),
+    call<TemplateSummary>("save_template", { draft }, () => saveBrowserTemplate(draft), { fallbackWhenUnavailable: true }),
+  deleteTemplate: (id: string) =>
+    call<void>("delete_template", { id }, () => deleteBrowserTemplate(id), { fallbackWhenUnavailable: true }),
   testOzonConnection: (shopId: string) =>
     call<unknown>("test_ozon_connection", { shopId }, () => ({ result: { items: [] }, mock: true })),
+  getShopUploadQuota: (shopId: string) =>
+    call<OzonUploadQuota>("get_shop_upload_quota", { shopId }),
   testOssUpload: (shopId: string) =>
     call<string>("test_oss_upload", { shopId }, () => `https://example.com/healthcheck/${shopId}.txt`),
+  getDeviceFingerprint: () =>
+    call<string>("get_device_fingerprint", undefined, () => `browser-${window.navigator.userAgent}`),
   listOzonProducts: (shopId: string, visibility?: string, limit?: number) =>
     call<OzonProductRow[]>(
       "list_ozon_products",
@@ -255,7 +427,7 @@ export const api = {
   getProductDescription: (shopId: string, offerId: string) =>
     call<unknown>("get_product_description", { shopId, offerId }, () => ({ result: {} })),
   getProductStocks: (shopId: string, productIds: number[]) =>
-    call<unknown>("get_product_stocks", { shopId, productIds }, () => ({ result: { items: [] } })),
+    call<unknown>("get_product_stocks", { shopId, offerIds: [], productIds, visibility: "" }, () => ({ result: { items: [] } })),
   importProducts: (shopId: string, items: unknown[]) =>
     call<unknown>("import_products", { shopId, items }, () => ({ result: { task_id: "mock-task" } })),
   listActions: (shopId: string) =>
@@ -314,6 +486,7 @@ export const api = {
         shopId: request.shopId,
         categoryId: request.categoryId,
         typeId: request.typeId,
+        cachedProducts: request.cachedProducts,
         warehouseId: request.warehouseId,
         stock: request.stock,
         price: request.price,
@@ -353,17 +526,62 @@ export const api = {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     })),
+  startAutoListing: (request: AutoListingRequest) =>
+    call<JobSummary>("start_auto_listing", { request }, () => ({
+      id: crypto.randomUUID(),
+      kind: "auto_listing",
+      title: "云图库自动上架",
+      status: "running",
+      progress: 5,
+      inputPath: request.batchId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })),
+  schedulerStatus: (request: SchedulerStatusRequest) =>
+    call<AutoListingSchedulerStatus>("scheduler_status", { request }),
+  runAutoListingPlanNow: (request: RunAutoListingPlanNowRequest) =>
+    call<AutoListingSchedulerStatus>("run_auto_listing_plan_now", { request }),
+  pauseAutoListingPlan: (request: PauseAutoListingPlanRequest) =>
+    call<AutoListingSchedulerStatus>("pause_auto_listing_plan", { request }),
+  startLocalMockupRender: (request: LocalMockupRenderRequest) =>
+    call<JobSummary>("start_local_mockup_render", { request }, () => ({
+      id: crypto.randomUUID(),
+      kind: "local_mockup",
+      title: "本地后台套图",
+      status: "running",
+      progress: 5,
+      inputPath: request.templateId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })),
+  readLocalMockupResult: (resultPath: string) =>
+    call<LocalMockupRenderResult>("read_local_mockup_result", { resultPath }),
+  startListingImageRepair: (request: ListingImageRepairRequest) =>
+    call<JobSummary>("start_listing_image_repair", { request }, () => ({
+      id: crypto.randomUUID(),
+      kind: "listing_image_repair",
+      title: "历史商品图片修复",
+      status: "running",
+      progress: 5,
+      inputPath: `${request.items.length} items`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })),
   startListedUpdate: (request: ListedUpdateRequest) =>
     call<JobSummary>("start_listed_update", { request }, () => ({
       id: crypto.randomUUID(),
       kind: "listed_update",
-      title: "按货号更新已上架商品",
+      title: request.categoryUpdate ? "按类目更新已上架商品视频" : "按货号更新已上架商品",
       status: "running",
       progress: 5,
-      inputPath: request.excelPath,
+      inputPath: request.categoryUpdate ? request.categoryUpdate.categoryName || String(request.categoryUpdate.categoryId) : request.excelPath,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     })),
+  reserveOrderShippingLabels: (assignments: OrderShippingLabelAssignment[]) =>
+    call<void>("reserve_order_shipping_labels", { assignments }, () => undefined),
+  downloadOrderShippingLabels: (request: OrderShippingLabelDownloadRequest) =>
+    call<void>("download_order_shipping_labels", { request }, () => undefined),
   startOrderDocuments: (request: OrderDocumentsRequest) =>
     call<JobSummary>("start_order_documents", { request }, () => ({
       id: crypto.randomUUID(),
@@ -393,18 +611,101 @@ export const api = {
       {
         shopId: request.shopId,
         shopName: "示例店铺",
+        postingKind: "fbs",
         postingNumber: "12345678-0001-1",
         orderNumber: "12345678",
         orderId: 12345678,
         status: request.status || "awaiting_packaging",
         inProcessAt: `${request.dateFrom}T00:00:00Z`,
         shipmentDate: `${request.dateTo}T12:00:00Z`,
+        warehouseName: "义乌仓库",
+        trackingNumber: "12345678-0001-1",
         productsCount: 1,
         offerIds: ["SKU001"],
+        products: [
+          {
+            productId: 1001,
+            offerId: "SKU001",
+            name: "示例丝巾商品",
+            quantity: 1,
+            price: 1999,
+            currencyCode: "RUB",
+            imageUrl: "https://placehold.co/96x96/png?text=SKU001",
+          },
+        ],
+        imageUrl: "https://placehold.co/96x96/png?text=SKU001",
         salesAmount: 1999,
         currencyCode: "RUB",
+        syncedAt: new Date().toISOString(),
       },
     ]),
+  listSavedOrderPostings: (query: StoredOrderQuery = {}) =>
+    call<OrderPostingRow[]>("list_saved_order_postings", { query }, () => [
+      {
+        shopId: query.shopIds?.[0] || "mock-shop",
+        shopName: "示例店铺",
+        postingKind: "fbs",
+        postingNumber: "47202470-0140-1",
+        orderNumber: "47202470",
+        orderId: 47202470,
+        status: query.status || "delivering",
+        inProcessAt: new Date().toISOString(),
+        shipmentDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+        warehouseName: "义乌仓库",
+        trackingNumber: "47202470-0140-1",
+        productsCount: 1,
+        offerIds: ["TM20251110001297"],
+        products: [
+          {
+            productId: 1002,
+            offerId: "TM20251110001297",
+            name: "示例头巾商品",
+            quantity: 1,
+            price: 2200,
+            currencyCode: "RUB",
+            imageUrl: "https://placehold.co/96x96/png?text=TM2025",
+          },
+        ],
+        imageUrl: "https://placehold.co/96x96/png?text=TM2025",
+        salesAmount: 2200,
+        currencyCode: "RUB",
+        syncedAt: new Date().toISOString(),
+      },
+    ]),
+  shipOrderPosting: (shopId: string, postingNumber: string) =>
+    call<OrderPostingRow>(
+      "ship_order_posting",
+      { shopId, postingNumber },
+      () => ({
+        shopId,
+        shopName: "示例店铺",
+        postingKind: "fbs",
+        postingNumber,
+        orderNumber: postingNumber.split("-")[0],
+        status: "awaiting_deliver",
+        inProcessAt: new Date().toISOString(),
+        shipmentDate: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
+        warehouseName: "义乌仓库",
+        trackingNumber: postingNumber,
+        productsCount: 1,
+        offerIds: ["SKU001"],
+        products: [
+          {
+            productId: 1001,
+            offerId: "SKU001",
+            name: "示例丝巾商品",
+            quantity: 1,
+            price: 1999,
+            currencyCode: "RUB",
+            imageUrl: "https://placehold.co/96x96/png?text=SKU001",
+          },
+        ],
+        imageUrl: "https://placehold.co/96x96/png?text=SKU001",
+        salesAmount: 1999,
+        currencyCode: "RUB",
+        syncedAt: new Date().toISOString(),
+      }),
+    ),
   startFollowSync: (shopId: string, priceMultiplier: number) =>
     call<JobSummary>("start_follow_sync", { shopId, priceMultiplier }, () => ({
       id: crypto.randomUUID(),
@@ -427,6 +728,17 @@ export const api = {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     })),
+  startListingMaintenance: (request: ListingMaintenanceRequest) =>
+    call<JobSummary>("start_listing_maintenance", { request }, () => ({
+      id: crypto.randomUUID(),
+      kind: "listing_maintenance",
+      title: "店铺自动运维",
+      status: "running",
+      progress: 5,
+      inputPath: request.shopId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })),
   startMaterialsJob: (request: MaterialsRequest) =>
     call<JobSummary>("start_materials_job", { request }, () => ({
       id: crypto.randomUUID(),
@@ -439,12 +751,38 @@ export const api = {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     })),
+  scanGalleryUploadFiles: (paths: string[]) =>
+    call<GalleryUploadSelection>(
+      "scan_gallery_upload_files",
+      { paths },
+      () => ({ count: 0, totalBytes: 0, sampleNames: [], paths: [] }),
+    ),
+  startGalleryUploadJob: (request: GalleryUploadRequest) =>
+    call<JobSummary>("start_gallery_upload_job", { request }, () => ({
+      id: crypto.randomUUID(),
+      kind: "gallery_upload",
+      title: "云图库图片上传",
+      status: "running",
+      progress: 5,
+      inputPath: request.sourceLabel,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })),
   preflightMaterials: (request: MaterialsRequest) =>
     call<PreflightIssue[]>("preflight_materials", { request }, () => [
-      { level: "info", scope: "预检查", message: "浏览器预览模式：桌面端会检查目录、AI Key 和预计处理量。" },
+      { level: "info", scope: "预检查", message: "浏览器预览模式：桌面端会检查目录、云端 AI 授权和预计处理量。" },
     ]),
-  listAiModels: (baseUrl: string, provider: string) =>
-    call<string[]>("list_ai_models", { baseUrl, provider }, () => [defaultSettings.textModel]),
+  listAiModels: (baseUrl: string, provider: string, kind?: "image" | "text") =>
+    call<string[]>(
+      "list_ai_models",
+      {
+        baseUrl,
+        provider,
+        kind,
+        cloudAuthToken: getCloudToken() || undefined,
+      },
+      () => [kind === "image" ? defaultSettings.imageModel : defaultSettings.textModel],
+    ),
   renameMaterialImages: (request: ImageRenameRequest) =>
     call<ImageRenameResult>("rename_material_images", { request }, () => ({
       count: 0,
@@ -456,7 +794,13 @@ export const api = {
     ]),
   preflightListedUpdate: (request: ListedUpdateRequest) =>
     call<PreflightIssue[]>("preflight_listed_update", { request }, () => [
-      { level: "info", scope: "预检查", message: "浏览器预览模式：桌面端会检查店铺、Excel、更新项和线上商品连接。" },
+      {
+        level: "info",
+        scope: "预检查",
+        message: request.categoryUpdate
+          ? "浏览器预览模式：桌面端会检查店铺、类目、视频链接和线上商品连接。"
+          : "浏览器预览模式：桌面端会检查店铺、Excel、更新项和线上商品连接；只有更新图片时才检查图片目录。",
+      },
     ]),
   startLocalSceneJob: (request: LocalSceneRequest) =>
     call<JobSummary>("start_local_scene_job", { request }, () => ({
@@ -465,7 +809,7 @@ export const api = {
       title: "本地场景图合成",
       status: "running",
       progress: 5,
-      inputPath: request.sourceRoot,
+      inputPath: request.singleImage || request.sourceRoot,
       outputPath: request.outputRoot,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -487,4 +831,7 @@ export const api = {
   openUrl: (url: string) => call<void>("open_url", { url }, () => {
     window.open(url, "_blank", "noopener,noreferrer");
   }),
+  pickDirectory: () => call<string>("pick_directory"),
+  pickFile: () => call<string>("pick_file"),
+  pickImageFiles: () => call<string[]>("pick_image_files"),
 };

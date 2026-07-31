@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration as StdDuration;
 use tokio::time::{sleep, Duration};
 
 #[derive(Clone)]
@@ -29,6 +30,96 @@ pub struct RuntimeShopConfig {
 #[derive(Clone, Default)]
 struct ColorDictionaryResolver {
     options: Vec<AttributeDictionaryValue>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyPresignResponse {
+    object_key: String,
+    upload_url: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyCompleteResponse {
+    public_url: String,
+}
+
+#[derive(Clone)]
+struct CloudListingImageUploader {
+    client: reqwest::Client,
+    base_url: String,
+    token: String,
+}
+
+impl CloudListingImageUploader {
+    fn new(base_url: &str, token: &str) -> Result<Self> {
+        let base_url = base_url.trim().trim_end_matches('/').to_string();
+        let token = token.trim().to_string();
+        if base_url.is_empty() || token.is_empty() {
+            anyhow::bail!("请先登录云端会员账号后使用统一 OSS 上架");
+        }
+        let client = reqwest::Client::builder()
+            .timeout(StdDuration::from_secs(120))
+            .build()?;
+        Ok(Self {
+            client,
+            base_url,
+            token,
+        })
+    }
+
+    async fn upload_file(&self, path: &Path, sku: &str, filename: &str) -> Result<String> {
+        let bytes = tokio::fs::read(path)
+            .await
+            .with_context(|| format!("读取上传图片失败：{}", path.display()))?;
+        let content_type = cloud_upload_content_type(filename);
+        let presign = self
+            .client
+            .post(format!("{}/legacy-listing/uploads/presign", self.base_url))
+            .bearer_auth(&self.token)
+            .json(&json!({
+                "sku": sku,
+                "filename": filename,
+                "contentType": content_type,
+                "sizeBytes": bytes.len(),
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<LegacyPresignResponse>()
+            .await?;
+        self.client
+            .put(&presign.upload_url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(bytes)
+            .send()
+            .await?
+            .error_for_status()?;
+        let complete = self
+            .client
+            .post(format!("{}/legacy-listing/uploads/complete", self.base_url))
+            .bearer_auth(&self.token)
+            .json(&legacy_complete_payload(&presign.object_key))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<LegacyCompleteResponse>()
+            .await?;
+        Ok(complete.public_url)
+    }
+}
+
+fn cloud_upload_content_type(filename: &str) -> &'static str {
+    if filename.to_ascii_lowercase().ends_with(".png") {
+        "image/png"
+    } else {
+        "image/jpeg"
+    }
+}
+
+fn legacy_complete_payload(object_key: &str) -> Value {
+    json!({ "objectKey": object_key })
 }
 
 pub async fn run_batch_upload(
@@ -78,6 +169,10 @@ async fn batch_upload_inner(
         anyhow::bail!("Excel 没有可处理的货号");
     }
     jobs.log(job_id, "info", &format!("读取 Excel {} 个货号", rows.len()));
+    let uploader = CloudListingImageUploader::new(
+        request.cloud_api_base_url.as_deref().unwrap_or_default(),
+        request.cloud_auth_token.as_deref().unwrap_or_default(),
+    )?;
 
     let total = rows.len() * shops.len();
     let mut done = 0usize;
@@ -90,7 +185,6 @@ async fn batch_upload_inner(
         jobs.log(job_id, "info", &format!("开始店铺: {}", runtime.shop.name));
         let ozon =
             OzonSellerClient::new(runtime.shop.client_id.clone(), runtime.ozon_api_key.clone())?;
-        let oss = oss_client(&runtime)?;
         let watermark_path = shop_watermark_path(&runtime.shop)?;
         let upload_temp_root = std::env::temp_dir()
             .join("ozon-sjsq-upload-watermark")
@@ -119,7 +213,7 @@ async fn batch_upload_inner(
                 jobs,
                 job_id,
                 &ozon,
-                &oss,
+                &uploader,
                 &runtime.shop.client_id,
                 &portrait_root,
                 &watermark_path,
@@ -170,7 +264,7 @@ async fn process_upload_row(
     jobs: &JobRegistry,
     job_id: &str,
     ozon: &OzonSellerClient,
-    oss: &AliyunOssClient,
+    uploader: &CloudListingImageUploader,
     client_id: &str,
     portrait_root: &Path,
     watermark_path: &Path,
@@ -219,15 +313,18 @@ async fn process_upload_row(
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("image.jpg");
-        let object_key = build_oss_object_key(client_id, &row.sku, filename)?;
         jobs.log(
             job_id,
             "info",
-            &format!("{} 合并水印后上传 OSS: {}", row.sku, object_key),
+            &format!("{} 合并水印后上传统一 OSS: {}", row.sku, filename),
         );
         let upload_path =
             prepare_watermarked_upload_image(&image, watermark_path, upload_temp_root, &row.sku)?;
-        image_urls.push(oss.upload_file(&upload_path, &object_key).await?);
+        image_urls.push(
+            uploader
+                .upload_file(&upload_path, &row.sku, filename)
+                .await?,
+        );
     }
     let uploaded_image_count = image_urls.len();
     let resolved_product_color_values =
@@ -550,11 +647,51 @@ async fn listed_update_inner(
     jobs.update(job_id, JobStatus::Running, 1, None);
     let portrait_root = PathBuf::from(&request.portrait_root);
     let excel_path = PathBuf::from(&request.excel_path);
-    let mut rows = read_content_rows(&excel_path)?;
-    if let Some(max_items) = request.max_items.filter(|value| *value > 0) {
-        rows.truncate(max_items as usize);
-    }
     let ozon = OzonSellerClient::new(runtime.shop.client_id.clone(), runtime.ozon_api_key.clone())?;
+    if let Some(category) = request.category_update.as_ref() {
+        let cached_count = category
+            .cached_products
+            .as_ref()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| !item.offer_id.trim().is_empty())
+                    .count()
+            })
+            .unwrap_or(0);
+        if cached_count > 0 {
+            jobs.log(
+                job_id,
+                "info",
+                &format!(
+                    "使用本地缓存类目商品：{}，{} 个货号",
+                    category.category_name.as_deref().unwrap_or("未命名类目"),
+                    cached_count
+                ),
+            );
+        } else {
+            jobs.log(
+                job_id,
+                "info",
+                &format!(
+                    "本地没有可用类目商品缓存，开始从 Ozon 查询：{}",
+                    category.category_name.as_deref().unwrap_or("未命名类目")
+                ),
+            );
+        }
+    }
+    let mut rows = listed_update_rows(&ozon, &request, &excel_path).await?;
+    if request.category_update.is_none() {
+        if let Some(max_items) = request.max_items.filter(|value| *value > 0) {
+            rows.truncate(max_items as usize);
+        }
+    }
+    if rows.is_empty() {
+        anyhow::bail!("没有可更新的商品");
+    }
+    if request.update_video && clean_links(&request.template_video_links).is_empty() {
+        anyhow::bail!("更新视频时请至少填写一个 http/https 视频链接");
+    }
     let oss = if request.update_images {
         Some(oss_client(&runtime)?)
     } else {
@@ -693,19 +830,37 @@ async fn listed_update_inner(
         let progress = (((index + 1) * 100) / rows.len().max(1)).clamp(1, 99) as u8;
         jobs.update(job_id, JobStatus::Running, progress, None);
     }
-    let result_path = PathBuf::from(&request.portrait_root).join("listed_update_results.xlsx");
+    let result_path = listed_update_result_path(&request, &excel_path, job_id)?;
     write_batch_results(&result_path, &results)?;
-    write_status_to_source_excel(&excel_path, &results)?;
+    if request.category_update.is_none() {
+        write_status_to_source_excel(&excel_path, &results)?;
+    }
     jobs.log(
         job_id,
         "info",
         &format!("结果表已保存: {}", result_path.display()),
     );
-    jobs.log(
-        job_id,
-        "info",
-        &format!("更新状态已写回: {}", excel_path.display()),
-    );
+    if request.category_update.is_none() {
+        jobs.log(
+            job_id,
+            "info",
+            &format!("更新状态已写回: {}", excel_path.display()),
+        );
+    } else if let Some(category) = request.category_update.as_ref() {
+        jobs.log(
+            job_id,
+            "info",
+            &format!(
+                "类目更新完成: {}，类目 {}，类型 {}",
+                category.category_name.as_deref().unwrap_or("未命名类目"),
+                category.category_id,
+                category
+                    .type_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into())
+            ),
+        );
+    }
     let success_count = results.iter().filter(|row| row.status == "已提交").count();
     let failed_count = results
         .iter()
@@ -718,6 +873,76 @@ async fn listed_update_inner(
         failed_count,
     );
     Ok(())
+}
+
+async fn listed_update_rows(
+    ozon: &OzonSellerClient,
+    request: &ListedUpdateRequest,
+    excel_path: &Path,
+) -> Result<Vec<ContentRow>> {
+    if let Some(category) = request.category_update.as_ref() {
+        if let Some(cached_products) = category.cached_products.as_ref() {
+            let rows = cached_products
+                .iter()
+                .map(|product| ContentRow {
+                    sku: product.offer_id.clone(),
+                    title: product.name.clone(),
+                    product_color: String::new(),
+                    color_name: String::new(),
+                    description: String::new(),
+                    rich_json: String::new(),
+                })
+                .filter(|row| !row.sku.trim().is_empty())
+                .collect::<Vec<_>>();
+            if !rows.is_empty() {
+                return Ok(rows);
+            }
+        }
+        let products = ozon
+            .list_all_products_by_category(category.category_id, category.type_id)
+            .await?;
+        return Ok(products
+            .into_iter()
+            .map(|product| ContentRow {
+                sku: product.offer_id,
+                title: product.name,
+                product_color: String::new(),
+                color_name: String::new(),
+                description: String::new(),
+                rich_json: String::new(),
+            })
+            .filter(|row| !row.sku.trim().is_empty())
+            .collect());
+    }
+    if request.update_title || request.update_description || request.update_rich_json {
+        read_content_rows(excel_path)
+    } else {
+        crate::core::excel::read_sku_rows(excel_path)
+    }
+}
+
+fn listed_update_result_path(
+    request: &ListedUpdateRequest,
+    excel_path: &Path,
+    job_id: &str,
+) -> Result<PathBuf> {
+    let output_dir = if request.category_update.is_some() {
+        std::env::temp_dir()
+            .join("ozon-sjsq-listed-update")
+            .join(job_id)
+    } else {
+        let portrait_root = PathBuf::from(&request.portrait_root);
+        if portrait_root.is_dir() {
+            portrait_root
+        } else {
+            excel_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()))
+        }
+    };
+    std::fs::create_dir_all(&output_dir)?;
+    Ok(output_dir.join("listed_update_results.xlsx"))
 }
 
 async fn upload_sku_images(
@@ -1063,5 +1288,32 @@ fn result_row(
         task_id: task_id.into(),
         oss_folder: oss_folder.into(),
         error: error.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloud_upload_content_type_matches_filename_extension() {
+        assert_eq!(cloud_upload_content_type("photo.png"), "image/png");
+        assert_eq!(cloud_upload_content_type("PHOTO.PNG"), "image/png");
+        assert_eq!(cloud_upload_content_type("photo.jpg"), "image/jpeg");
+        assert_eq!(cloud_upload_content_type("photo.jpeg"), "image/jpeg");
+    }
+
+    #[test]
+    fn cloud_uploader_requires_base_url_and_token() {
+        assert!(CloudListingImageUploader::new("", "token").is_err());
+        assert!(CloudListingImageUploader::new("https://api.example.com", " ").is_err());
+    }
+
+    #[test]
+    fn legacy_complete_payload_contains_only_object_key() {
+        assert_eq!(
+            legacy_complete_payload("legacy-listing/user/sku/image.png"),
+            json!({ "objectKey": "legacy-listing/user/sku/image.png" })
+        );
     }
 }

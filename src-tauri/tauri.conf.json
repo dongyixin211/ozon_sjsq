@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Ozon SJSQ",
-  "version": "0.1.0",
+  "version": "0.3.14",
   "identifier": "com.codex.ozon-sjsq",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,19 +13,45 @@
     "windows": [
       {
         "title": "Ozon SJSQ",
-        "width": 1280,
-        "height": 820,
-        "minWidth": 1040,
-        "minHeight": 680
+        "width": 620,
+        "height": 430,
+        "minWidth": 520,
+        "minHeight": 360
       }
     ],
     "security": {
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "ozon-sjsq"
+        ]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIwRUQ4N0IwNERBMzlCRUUKUldUdW02Tk5zSWZ0SUd0cTM5NHZ3ZFJXMi9kRWFiblNNYmhNQkhiMmsxdHgwMWpIdXQyS1VxK0YK",
+      "endpoints": [
+        "https://ghfjscfw.oss-cn-hangzhou.aliyuncs.com/releases/windows/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "msi", "nsis"],
-    "category": "Business"
+    "createUpdaterArtifacts": true,
+    "targets": [
+      "dmg",
+      "msi",
+      "nsis"
+    ],
+    "category": "Business",
+    "resources": {
+      "../server/src/mockup-templates/": "mockup-templates/"
+    }
   }
 }

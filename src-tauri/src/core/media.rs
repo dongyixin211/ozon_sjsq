@@ -1,6 +1,6 @@
 use crate::core::ai::{
-    is_missing_chat_content_error, is_ollama_provider, is_pixel_provider, is_retryable_image_error,
-    CopyPayload, OpenAiCompatibleClient, TitlePayload,
+    is_cloud_proxy_provider, is_missing_chat_content_error, is_ollama_provider, is_pixel_provider,
+    is_retryable_image_error, CopyPayload, OpenAiCompatibleClient, TitlePayload,
 };
 use crate::core::business::{is_ai_generated_image, list_sku_images};
 use crate::core::excel::{self, ContentRow};
@@ -93,19 +93,12 @@ async fn materials_inner(
         .transpose()?
         .map(Arc::new);
     let image_client = if request.generate_ai_images {
-        let key = secrets::get_secret(&secrets::provider_api_key_id(
-            "image",
-            &request.image_provider,
-        ))
-        .context("未找到图片 provider API Key，请先在设置中保存")?;
-        Some(OpenAiCompatibleClient::new(&request.image_base_url, key)?)
+        Some(ai_client_for_request(&request, "image")?)
     } else {
         None
     };
     let text_client = if request.generate_copy {
-        let key =
-            text_provider_key(&request).context("未找到文案 provider API Key，请先在设置中保存")?;
-        Some(OpenAiCompatibleClient::new(&request.text_base_url, key)?)
+        Some(ai_client_for_request(&request, "text")?)
     } else {
         None
     };
@@ -746,10 +739,28 @@ async fn local_scene_inner(
     jobs.update(job_id, JobStatus::Running, 1, None);
     let source_root = PathBuf::from(&request.source_root);
     let output_root = PathBuf::from(&request.output_root);
-    if !source_root.is_dir() {
+    let single_image_path = request
+        .single_image
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    if single_image_path.is_none() && !source_root.is_dir() {
         anyhow::bail!("源目录不存在: {}", source_root.display());
     }
-    let mut items = collect_sku_images(&source_root)?;
+    let mut items = if let Some(image_path) = single_image_path {
+        if !image_path.is_file() {
+            anyhow::bail!("鍗曞紶鍥剧墖涓嶅瓨鍦? {}", image_path.display());
+        }
+        let sku = image_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("sku")
+            .to_string();
+        vec![(sku, image_path)]
+    } else {
+        collect_sku_images(&source_root)?
+    };
     if let Some(max_items) = request.max_items.filter(|value| *value > 0) {
         items.truncate(max_items as usize);
     }
@@ -983,6 +994,40 @@ fn text_provider_key(request: &MaterialsRequest) -> Result<String> {
         .or(Err(error)),
         Err(error) => Err(error),
     }
+}
+
+fn ai_client_for_request(request: &MaterialsRequest, kind: &str) -> Result<OpenAiCompatibleClient> {
+    let is_image = kind == "image";
+    let provider = if is_image {
+        &request.image_provider
+    } else {
+        &request.text_provider
+    };
+    let base_url = if is_image {
+        &request.image_base_url
+    } else {
+        &request.text_base_url
+    };
+    if is_cloud_proxy_provider(provider) {
+        let token = request
+            .cloud_auth_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("请先登录会员账号，再使用云端 AI 功能")?;
+        return OpenAiCompatibleClient::new_cloud_proxy(base_url, token, kind);
+    }
+    if is_image {
+        let key = secrets::get_secret(&secrets::provider_api_key_id(
+            "image",
+            &request.image_provider,
+        ))
+        .context("未找到图片 provider API Key，请先在设置中保存")?;
+        return OpenAiCompatibleClient::new(&request.image_base_url, key);
+    }
+    let key =
+        text_provider_key(request).context("未找到文案 provider API Key，请先在设置中保存")?;
+    OpenAiCompatibleClient::new(&request.text_base_url, key)
 }
 
 fn cover_resize(image: &DynamicImage, size: (u32, u32)) -> DynamicImage {

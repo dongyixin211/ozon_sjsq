@@ -16,3 +16,18 @@ export function hasBaiduBdussCookie(value: string): boolean {
     return key.trim() === "BDUSS" && rest.join("=").trim().length > 0;
   });
 }
+
+export function selectedPostingNumbersInRowOrder(
+  rows: Array<{ postingNumber: string }>,
+  selectedPostingNumbers: string[],
+): string[] {
+  const selected = new Set(selectedPostingNumbers);
+  const seen = new Set<string>();
+  return rows
+    .map((row) => row.postingNumber.trim())
+    .filter((postingNumber) => {
+      if (!postingNumber || !selected.has(postingNumber) || seen.has(postingNumber)) return false;
+      seen.add(postingNumber);
+      return true;
+    });
+}

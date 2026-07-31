@@ -20,6 +20,13 @@ export function LongOutput({
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [copyStatus, setCopyStatus] = useState("");
   const hasValue = value.trim().length > 0;
+  const lineCount = hasValue ? value.split(/\r?\n/).length : 0;
+  const outputClassName = [
+    "log-box",
+    "long-output-box",
+    expanded ? "expanded" : "",
+    hasValue ? "" : "is-empty",
+  ].filter(Boolean).join(" ");
 
   const copy = async () => {
     if (!hasValue) return;
@@ -34,7 +41,10 @@ export function LongOutput({
   return (
     <div className="long-output" style={{ "--long-output-max-height": `${maxHeight}px` } as CSSProperties}>
       <div className="long-output-toolbar">
-        {label ? <strong>{label}</strong> : <span />}
+        <div className="long-output-title">
+          {label ? <strong>{label}</strong> : <span />}
+          {hasValue ? <span className="badge neutral">{lineCount} 行</span> : null}
+        </div>
         <div className="toolbar">
           {copyStatus ? <span className="muted">{copyStatus}</span> : null}
           <button className="secondary-button" disabled={!hasValue} onClick={copy}>复制</button>
@@ -44,7 +54,7 @@ export function LongOutput({
           </button>
         </div>
       </div>
-      <pre className={expanded ? "log-box long-output-box expanded" : "log-box long-output-box"}>{hasValue ? value : emptyText}</pre>
+      <pre className={outputClassName}>{hasValue ? value : emptyText}</pre>
     </div>
   );
 }

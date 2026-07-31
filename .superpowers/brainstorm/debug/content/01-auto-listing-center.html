@@ -1,0 +1,90 @@
+﻿<style>
+  .hero { padding: 28px; border-radius: 22px; background: linear-gradient(135deg,#111827,#243b6b); color:#fff; margin-bottom:20px; }
+  .hero h1 { margin:8px 0; font-size:28px; }
+  .hero p { opacity:.82; max-width:850px; }
+  .grid { display:grid; grid-template-columns:1.1fr .9fr; gap:18px; }
+  .panel { background:#fff; border:1px solid #e7eaf0; border-radius:18px; padding:20px; box-shadow:0 8px 30px rgba(30,50,90,.06); }
+  .panel h2 { margin:0 0 14px; font-size:18px; }
+  .flow { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .step { padding:10px 12px; border-radius:12px; background:#f3f6fb; font-weight:600; }
+  .arrow { color:#8892a6; }
+  .profile { border:1px solid #dde3ec; border-radius:14px; padding:14px; margin:10px 0; }
+  .profile-head { display:flex; justify-content:space-between; gap:12px; }
+  .badge { background:#e9f7ef; color:#177245; padding:4px 9px; border-radius:999px; font-size:12px; }
+  .kv { display:grid; grid-template-columns:130px 1fr; gap:8px; margin-top:12px; font-size:14px; }
+  .quota { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .metric { background:#f7f9fc; border-radius:14px; padding:14px; }
+  .metric strong { display:block; font-size:22px; margin-top:5px; }
+  .shops { display:grid; gap:10px; margin-top:12px; }
+  .shop { display:grid; grid-template-columns:1fr 110px 110px; gap:10px; align-items:center; padding:12px; border:1px solid #e5e9f0; border-radius:12px; }
+  .bar { height:7px; background:#e8edf4; border-radius:99px; overflow:hidden; margin-top:6px; }
+  .bar span { display:block; height:100%; background:#4f73d9; border-radius:99px; }
+  .task { display:grid; grid-template-columns:85px 1fr 90px; gap:12px; padding:12px 0; border-bottom:1px solid #eef1f5; }
+  .task:last-child { border:0; }
+  .state { font-size:12px; color:#365ec9; background:#eef3ff; border-radius:999px; padding:5px 8px; text-align:center; }
+  .warn { color:#995c09; background:#fff7e6; padding:10px 12px; border-radius:12px; margin-top:12px; }
+  .footer-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:18px; }
+  button.choice { border:1px solid #cfd7e6; background:#fff; padding:10px 16px; border-radius:11px; cursor:pointer; }
+  button.primary { background:#2f5fd0; color:#fff; border-color:#2f5fd0; }
+  @media(max-width:900px){ .grid{grid-template-columns:1fr}.quota{grid-template-columns:1fr}.shop{grid-template-columns:1fr} }
+</style>
+<div class="hero">
+  <div>本地自动调度 · 设计草图</div>
+  <h1>自动上品中心</h1>
+  <p>一次配置品类方案，客户端在每日时间窗口内读取 Ozon 实际额度，只处理当天要上传的图片，并确保一张图片只进入一个店铺。</p>
+</div>
+<div class="grid">
+  <section class="panel">
+    <h2>自动上品方案</h2>
+    <div class="flow">
+      <div class="step">商品类型：头巾 1:1</div><div class="arrow">→</div>
+      <div class="step">头巾样机</div><div class="arrow">→</div>
+      <div class="step">头巾标题词</div><div class="arrow">→</div>
+      <div class="step">3 个店铺</div>
+    </div>
+    <div class="profile">
+      <div class="profile-head"><strong>头巾自动上品</strong><span class="badge">自动执行中</span></div>
+      <div class="kv">
+        <span>执行时间</span><strong>每日 08:00–22:00</strong>
+        <span>选择图片</span><strong>最早上传且从未分配</strong>
+        <span>分配规则</span><strong>同品类店铺平均分配</strong>
+        <span>处理批次</span><strong>每批 10 张，缓冲 20 张</strong>
+        <span>重复规则</span><strong>一张图片全局只使用一次</strong>
+      </div>
+    </div>
+    <div class="warn">客户端关闭时自动暂停；重新启动后从已锁定的图片和任务阶段继续。</div>
+  </section>
+  <section class="panel">
+    <h2>今日额度与计划</h2>
+    <div class="quota">
+      <div class="metric"><span>Ozon 可创建</span><strong>246</strong></div>
+      <div class="metric"><span>容量可用</span><strong>1,820</strong></div>
+      <div class="metric"><span>今日计划</span><strong>240</strong></div>
+    </div>
+    <div class="shops">
+      <div class="shop"><div><strong>头巾店铺 A</strong><div class="bar"><span style="width:72%"></span></div></div><span>额度 82</span><strong>分配 80</strong></div>
+      <div class="shop"><div><strong>头巾店铺 B</strong><div class="bar"><span style="width:66%"></span></div></div><span>额度 80</span><strong>分配 80</strong></div>
+      <div class="shop"><div><strong>头巾店铺 C</strong><div class="bar"><span style="width:79%"></span></div></div><span>额度 84</span><strong>分配 80</strong></div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>自动任务流水线</h2>
+    <div class="task"><span class="state">正在套图</span><div><strong>批次 #0728-01</strong><div>10 张 · 店铺 A/B/C 平均分配</div></div><strong>6 / 10</strong></div>
+    <div class="task"><span class="state">等待处理</span><div><strong>批次 #0728-02</strong><div>10 张已锁定，不会被其他店铺使用</div></div><strong>0 / 10</strong></div>
+    <div class="task"><span class="state">缓冲队列</span><div><strong>下一批候选</strong><div>20 张仅预留，不提前套图</div></div><strong>20</strong></div>
+  </section>
+  <section class="panel">
+    <h2>失败与资源保护</h2>
+    <div class="kv">
+      <span>单图失败</span><strong>重试 3 次后进入异常队列，继续下一张</strong>
+      <span>Ozon 限流</span><strong>自动降低并发并延迟下一批</strong>
+      <span>额度减少</span><strong>缩减未开始批次，不释放已分配图片</strong>
+      <span>资源上限</span><strong>最多同时套图 2 张、生成标题 3 张</strong>
+      <span>人工处理</span><strong>重试、跳过、释放图片、查看日志</strong>
+    </div>
+  </section>
+</div>
+<div class="footer-actions">
+  <button class="choice" data-choice="needs_changes">需要调整</button>
+  <button class="choice primary" data-choice="approve_layout">这个方向可以</button>
+</div>

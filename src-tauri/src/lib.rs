@@ -1,27 +1,50 @@
 mod core;
 
-use core::{db::Database, jobs::JobRegistry};
+use core::{cloud_cache::CloudCache, db::Database, jobs::JobRegistry};
 use std::sync::Mutex;
 use tauri::Manager;
 
 pub struct AppState {
     pub db: Mutex<Database>,
+    pub cloud_cache: Mutex<CloudCache>,
     pub jobs: JobRegistry,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let db = Database::open(app.handle())?;
+            let cloud_cache = CloudCache::open(app.handle())?;
+            let db_path = db.path();
+            let jobs = db.list_jobs().unwrap_or_default();
+            let job_registry = JobRegistry::with_persistence(db_path.clone(), jobs, Vec::new());
             app.handle().manage(AppState {
                 db: Mutex::new(db),
-                jobs: JobRegistry::default(),
+                cloud_cache: Mutex::new(cloud_cache),
+                jobs: job_registry.clone(),
             });
+            let scheduler =
+                core::auto_listing_scheduler::AutoListingScheduler::new(db_path.clone());
+            app.handle().manage(scheduler.clone());
+            scheduler.start(app.handle().clone());
+            core::gallery_upload::resume_pending_upload_jobs(db_path, job_registry);
+            core::local_assistant::start(app.handle().clone());
+            core::cloud_bridge::start_outbox_worker(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             core::commands::load_app_state,
+            core::commands::get_device_fingerprint,
             core::commands::save_settings,
             core::commands::save_provider_secrets,
             core::commands::save_xiaoqian_api_key,
@@ -31,6 +54,10 @@ pub fn run() {
             core::commands::save_template,
             core::commands::delete_template,
             core::commands::test_ozon_connection,
+            core::commands::get_shop_upload_quota,
+            core::commands::scheduler_status,
+            core::commands::run_auto_listing_plan_now,
+            core::commands::pause_auto_listing_plan,
             core::commands::list_ozon_products,
             core::commands::list_categories,
             core::commands::list_products_by_category,
@@ -55,17 +82,28 @@ pub fn run() {
             core::commands::update_prices,
             core::commands::generate_barcodes,
             core::commands::start_batch_upload,
+            core::commands::start_auto_listing,
+            core::commands::start_local_mockup_render,
+            core::commands::read_local_mockup_result,
+            core::commands::start_listing_image_repair,
             core::commands::preflight_materials,
             core::commands::preflight_batch_upload,
             core::commands::preflight_listed_update,
             core::commands::test_oss_upload,
             core::commands::start_listed_update,
+            core::commands::reserve_order_shipping_labels,
+            core::commands::download_order_shipping_labels,
             core::commands::start_order_documents,
             core::commands::save_shop_seller_cookie,
             core::commands::list_order_postings,
+            core::commands::list_saved_order_postings,
+            core::commands::ship_order_posting,
             core::commands::start_follow_sync,
             core::commands::start_follow_automation,
+            core::commands::start_listing_maintenance,
             core::commands::start_materials_job,
+            core::commands::scan_gallery_upload_files,
+            core::commands::start_gallery_upload_job,
             core::commands::list_ai_models,
             core::commands::rename_material_images,
             core::commands::start_local_scene_job,
@@ -80,6 +118,7 @@ pub fn run() {
             core::commands::open_url,
             core::commands::pick_directory,
             core::commands::pick_file,
+            core::commands::pick_image_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Ozon SJSQ");

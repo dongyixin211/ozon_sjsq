@@ -1,22 +1,31 @@
+use crate::core::auto_listing_scheduler::AutoListingScheduler;
 use crate::core::db::Database;
 use crate::core::excel;
+use crate::core::excel::ContentRow;
 use crate::core::models::{
-    AppSettings, AppSnapshot, BatchUploadRequest, CategoryOption, FollowAutomationRequest,
-    ImageRenameRequest, ImageRenameResult, ImportPreviewInput, JobKind, JobLog, JobSummary,
-    ListedUpdateRequest, LocalSceneRequest, MaterialsRequest, OrderDocumentsRequest,
-    OrderListRequest, OrderPostingRow, OzonProductRow, PreflightIssue, ProductAnalyticsRow,
+    AppSettings, AppSnapshot, AutoListingRequest, BatchUploadRequest, CategoryOption,
+    FollowAutomationRequest, GalleryUploadRequest, GalleryUploadSelection, ImageRenameRequest,
+    ImageRenameResult, ImportPreviewInput, JobKind, JobLog, JobSummary, ListedUpdateRequest,
+    ListingImageRepairRequest, ListingMaintenanceRequest, LocalMockupRenderRequest,
+    LocalMockupRenderResult, LocalSceneRequest, MaterialsRequest, OrderDocumentsRequest,
+    OrderListRequest, OrderPostingRow, OrderShippingLabelAssignment,
+    OrderShippingLabelDownloadRequest, OzonProductRow, PreflightIssue, ProductAnalyticsRow,
     ProviderSecretDraft, ProviderSecretStatus, Shop, ShopDraft, SkuFolderReport, SkuFolderRow,
-    TemplateDraft, TemplateSummary, WarehouseOption,
+    StoredOrderQuery, TemplateDraft, TemplateSummary, WarehouseOption,
 };
 use crate::core::oss::AliyunOssClient;
-use crate::core::ozon::OzonSellerClient;
+use crate::core::ozon::{OzonSellerClient, OzonUploadQuota};
 use crate::core::secrets;
-use crate::core::{ai, batch, business, follow, media, order_docs};
+use crate::core::{
+    ai, auto_listing, auto_listing_scheduler, batch, business, device, follow, gallery_upload,
+    listing_image_repair, listing_maintenance, local_mockup, media, order_docs,
+};
 use crate::AppState;
+use chrono::{Offset, TimeZone};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use tauri::State;
+use tauri::{Manager, State};
 
 #[tauri::command]
 pub fn load_app_state(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
@@ -34,6 +43,11 @@ pub fn load_app_state(state: State<'_, AppState>) -> Result<AppSnapshot, String>
         jobs,
         provider_secrets,
     })
+}
+
+#[tauri::command]
+pub fn get_device_fingerprint(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(device::fingerprint(&app))
 }
 
 #[tauri::command]
@@ -178,6 +192,42 @@ pub async fn test_ozon_connection(
 }
 
 #[tauri::command]
+pub async fn get_shop_upload_quota(
+    state: State<'_, AppState>,
+    shop_id: String,
+) -> Result<OzonUploadQuota, String> {
+    ozon_client(&state, &shop_id)?
+        .product_upload_quota()
+        .await
+        .map_err(to_string)
+}
+
+#[tauri::command]
+pub fn scheduler_status(
+    scheduler: State<'_, AutoListingScheduler>,
+    request: auto_listing_scheduler::SchedulerStatusRequest,
+) -> Result<auto_listing_scheduler::SchedulerStatus, String> {
+    scheduler.status(&request.account_id).map_err(to_string)
+}
+
+#[tauri::command]
+pub async fn run_auto_listing_plan_now(
+    app: tauri::AppHandle,
+    scheduler: State<'_, AutoListingScheduler>,
+    request: auto_listing_scheduler::RunSchedulerRequest,
+) -> Result<auto_listing_scheduler::SchedulerStatus, String> {
+    scheduler.tick(app, request).await
+}
+
+#[tauri::command]
+pub fn pause_auto_listing_plan(
+    scheduler: State<'_, AutoListingScheduler>,
+    request: auto_listing_scheduler::PauseSchedulerRequest,
+) -> Result<auto_listing_scheduler::SchedulerStatus, String> {
+    scheduler.pause(request)
+}
+
+#[tauri::command]
 pub async fn list_ozon_products(
     state: State<'_, AppState>,
     shop_id: String,
@@ -269,6 +319,7 @@ pub async fn update_category_products(
     shop_id: String,
     category_id: i64,
     type_id: Option<i64>,
+    cached_products: Option<Vec<OzonProductRow>>,
     warehouse_id: Option<i64>,
     stock: Option<i64>,
     price: Option<String>,
@@ -295,10 +346,17 @@ pub async fn update_category_products(
     let fallback_currency = currency_code.unwrap_or_default().trim().to_string();
 
     let client = ozon_client(&state, &shop_id)?;
-    let products = client
-        .list_all_products_by_category(category_id, type_id)
-        .await
-        .map_err(to_string)?;
+    let products = cached_products
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(Vec::new);
+    let products = if products.is_empty() {
+        client
+            .list_all_products_by_category(category_id, type_id)
+            .await
+            .map_err(to_string)?
+    } else {
+        products
+    };
     if products.is_empty() {
         return Err("所选类目没有匹配商品".to_string());
     }
@@ -592,14 +650,10 @@ pub fn start_batch_upload(
             .map(|shop_id| {
                 let shop = db.get_shop(shop_id).map_err(to_string)?;
                 let ozon_api_key = db.shop_api_key(shop_id).map_err(to_string)?;
-                let (shop, oss_secret) = db
-                    .shop_with_effective_oss(shop_id)
-                    .map(|(effective_shop, secret)| (effective_shop, Some(secret)))
-                    .unwrap_or((shop, None));
                 Ok(batch::RuntimeShopConfig {
                     shop,
                     ozon_api_key,
-                    oss_secret,
+                    oss_secret: None,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?
@@ -612,6 +666,159 @@ pub fn start_batch_upload(
     let jobs = state.jobs.clone();
     let job_id = job.id.clone();
     tauri::async_runtime::spawn(batch::run_batch_upload(jobs, job_id, request, shops));
+    Ok(job)
+}
+
+#[tauri::command]
+pub fn start_auto_listing(
+    state: State<'_, AppState>,
+    request: AutoListingRequest,
+) -> Result<JobSummary, String> {
+    validate_auto_listing_request(&request)?;
+    let shop_ids = request
+        .shop_configs
+        .iter()
+        .map(|config| config.shop_id.clone())
+        .collect::<HashSet<_>>();
+    let (shops, cache_root) = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        let shops = shop_ids
+            .iter()
+            .map(|shop_id| {
+                let shop = db.get_shop(shop_id).map_err(to_string)?;
+                let ozon_api_key = db.shop_api_key(shop_id).map_err(to_string)?;
+                let (shop, oss_secret) = db
+                    .shop_with_effective_oss(shop_id)
+                    .map(|(effective_shop, secret)| (effective_shop, Some(secret)))
+                    .unwrap_or((shop, None));
+                Ok(batch::RuntimeShopConfig {
+                    shop,
+                    ozon_api_key,
+                    oss_secret,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let cache_root = db
+            .path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("local-mockup-cache");
+        (shops, cache_root)
+    };
+    let job = state.jobs.create_job(
+        JobKind::AutoListing,
+        "云图库自动上架".into(),
+        request.batch_id.clone(),
+    );
+    let jobs = state.jobs.clone();
+    let job_id = job.id.clone();
+    tauri::async_runtime::spawn(auto_listing::run_auto_listing(
+        jobs, job_id, request, shops, cache_root,
+    ));
+    Ok(job)
+}
+
+#[tauri::command]
+pub fn start_local_mockup_render(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: LocalMockupRenderRequest,
+) -> Result<JobSummary, String> {
+    if request.template_id.trim().is_empty() {
+        return Err("请选择要使用的样机".into());
+    }
+    if request.assets.is_empty() {
+        return Err("请选择要套图的图片".into());
+    }
+    let cache_root = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        db.path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("local-mockup-cache")
+    };
+    let bundled_template_root = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|path| path.join("mockup-templates"));
+    let job = state.jobs.create_job(
+        JobKind::LocalMockup,
+        format!(
+            "本地后台套图：{} 张 / {}",
+            request.assets.len(),
+            request
+                .template_name
+                .as_deref()
+                .unwrap_or(request.template_id.as_str())
+        ),
+        Some(request.template_id.clone()),
+    );
+    let jobs = state.jobs.clone();
+    let job_id = job.id.clone();
+    tauri::async_runtime::spawn(local_mockup::run_local_mockup_render(
+        jobs,
+        job_id,
+        request,
+        cache_root,
+        bundled_template_root,
+    ));
+    Ok(job)
+}
+
+#[tauri::command]
+pub fn read_local_mockup_result(result_path: String) -> Result<LocalMockupRenderResult, String> {
+    local_mockup::read_result(Path::new(&result_path)).map_err(to_string)
+}
+
+#[tauri::command]
+pub fn start_listing_image_repair(
+    state: State<'_, AppState>,
+    request: ListingImageRepairRequest,
+) -> Result<JobSummary, String> {
+    validate_listing_image_repair_request(&request)?;
+    let shop_ids = request
+        .items
+        .iter()
+        .map(|item| item.external_shop_id.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
+    let shops = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        shop_ids
+            .iter()
+            .map(|shop_id| {
+                let shop = db.get_shop(shop_id).map_err(to_string)?;
+                let ozon_api_key = db.shop_api_key(shop_id).map_err(to_string)?;
+                Ok(batch::RuntimeShopConfig {
+                    shop,
+                    ozon_api_key,
+                    oss_secret: None,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    };
+    let job = state.jobs.create_job(
+        JobKind::ListingImageRepair,
+        "历史商品图片修复".into(),
+        Some(format!("{} items", request.items.len())),
+    );
+    let jobs = state.jobs.clone();
+    let job_id = job.id.clone();
+    tauri::async_runtime::spawn(listing_image_repair::run_listing_image_repair(
+        jobs, job_id, request, shops,
+    ));
     Ok(job)
 }
 
@@ -703,22 +910,24 @@ pub fn preflight_materials(
             "materials",
         ));
     }
-    if request.generate_ai_images && !provider_secret_exists("image", &request.image_provider) {
+    if request.generate_ai_images
+        && !provider_secret_exists("image", &request.image_provider, &request)
+    {
         issues.push(issue(
             "error",
             "AI 图片",
-            "图片 API Key 未保存",
-            "去设置",
-            "settings",
+            &ai_key_missing_message(&request.image_provider),
+            "",
+            "",
         ));
     }
     if request.generate_copy && !text_provider_secret_exists(&request) {
         issues.push(issue(
             "error",
             "AI 文案",
-            "文案 API Key 未保存",
-            "去设置",
-            "settings",
+            &ai_key_missing_message(&request.text_provider),
+            "",
+            "",
         ));
     }
     if issues.is_empty() {
@@ -733,7 +942,7 @@ pub fn preflight_batch_upload(
     request: BatchUploadRequest,
 ) -> Result<Vec<PreflightIssue>, String> {
     let mut issues = Vec::new();
-    let shops = shops_for_preflight(&state, &request.shop_ids, true, &mut issues)?;
+    let shops = shops_for_preflight(&state, &request.shop_ids, false, &mut issues)?;
     check_excel_and_images(
         &request.excel_path,
         &request.portrait_root,
@@ -751,6 +960,27 @@ pub fn preflight_batch_upload(
         ));
     }
     check_shop_watermarks(&shops, &mut issues);
+    if request
+        .cloud_api_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+        || request
+            .cloud_auth_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+    {
+        issues.push(issue(
+            "error",
+            "统一 OSS",
+            "请先登录云端会员账号后使用统一 OSS 上架",
+            "登录会员账号",
+            "ozon",
+        ));
+    }
     if let Err(message) = validate_auto_upload_options(&request) {
         issues.push(issue(
             "error",
@@ -792,31 +1022,132 @@ fn validate_auto_upload_options(request: &BatchUploadRequest) -> Result<(), Stri
     Ok(())
 }
 
+fn validate_auto_listing_request(request: &AutoListingRequest) -> Result<(), String> {
+    if request.items.is_empty() {
+        return Err("请先选择要自动上架的图片".into());
+    }
+    if request.shop_configs.is_empty() {
+        return Err("请至少配置一个店铺的自动上架参数".into());
+    }
+    let shop_ids = request
+        .shop_configs
+        .iter()
+        .map(|config| config.shop_id.as_str())
+        .collect::<HashSet<_>>();
+    for config in &request.shop_configs {
+        if config.shop_id.trim().is_empty() {
+            return Err("店铺不能为空".into());
+        }
+        if config.template_product.is_none() {
+            return Err("请先为每个店铺选择本地 Ozon 商品模板".into());
+        }
+        if config.auto_update_stock {
+            if config.auto_warehouse_id.is_none() {
+                return Err("启用自动补库存后，请先选择仓库".into());
+            }
+            if config.auto_stock.unwrap_or_default() < 0 {
+                return Err("自动库存数量不能小于 0".into());
+            }
+        }
+        if config.auto_add_to_action {
+            if config.auto_action_id.is_none() {
+                return Err("启用自动参加活动后，请先选择活动".into());
+            }
+            if config.auto_action_stock.unwrap_or_default() <= 0 {
+                return Err("活动库存必须大于 0".into());
+            }
+            if config.action_retry_count.unwrap_or(6) <= 0 {
+                return Err("活动重试次数必须大于 0".into());
+            }
+            if config.action_retry_interval_minutes.unwrap_or(30) <= 0 {
+                return Err("活动重试间隔必须大于 0 分钟".into());
+            }
+        }
+    }
+    for item in &request.items {
+        if item.source_sku.trim().is_empty() {
+            return Err("存在空货号，不能自动上架".into());
+        }
+        if item.title.trim().is_empty() {
+            return Err(format!("{} 还没有标题，请先生成标题", item.source_sku));
+        }
+        if item.image_urls.is_empty() {
+            return Err(format!("{} 还没有套图图片", item.source_sku));
+        }
+        if !shop_ids.contains(item.shop_id.as_str()) {
+            return Err(format!("{} 分配的店铺没有自动上架配置", item.source_sku));
+        }
+    }
+    Ok(())
+}
+
+fn validate_listing_image_repair_request(
+    request: &ListingImageRepairRequest,
+) -> Result<(), String> {
+    if request.items.is_empty() {
+        return Err("没有可修复图片链接的历史商品".into());
+    }
+    if request.items.len() > 2000 {
+        return Err("单次历史图片修复最多处理 2000 个商品，请分批执行".into());
+    }
+    for item in &request.items {
+        if item.external_shop_id.trim().is_empty() {
+            return Err("历史图片修复存在空店铺 ID".into());
+        }
+        if item.source_sku.trim().is_empty() {
+            return Err("历史图片修复存在空货号".into());
+        }
+        if item.image_urls.iter().all(|url| url.trim().is_empty()) {
+            return Err(format!("{} 没有可提交给 Ozon 的图片链接", item.source_sku));
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn preflight_listed_update(
     state: State<'_, AppState>,
     request: ListedUpdateRequest,
 ) -> Result<Vec<PreflightIssue>, String> {
     let mut issues = Vec::new();
+    let update_selected = request.update_title
+        || request.update_description
+        || request.update_images
+        || request.update_video
+        || request.update_rich_json;
     let shops = shops_for_preflight(
         &state,
         std::slice::from_ref(&request.shop_id),
         false,
         &mut issues,
     )?;
-    check_excel_and_images(
-        &request.excel_path,
-        &request.portrait_root,
-        request.max_items,
-        false,
-        &mut issues,
-    );
-    if !(request.update_title
-        || request.update_description
-        || request.update_images
-        || request.update_video
-        || request.update_rich_json)
-    {
+    if let Some(category) = request.category_update.as_ref() {
+        if category.category_id <= 0 {
+            issues.push(issue(
+                "error",
+                "商品分类",
+                "请先选择要更新的商品分类",
+                "选择分类",
+                "ozon",
+            ));
+        }
+    } else {
+        check_listed_update_excel(
+            &request.excel_path,
+            request.max_items,
+            update_requires_full_excel(&request),
+            &mut issues,
+        );
+        if request.update_images {
+            check_update_image_directory(
+                &request.excel_path,
+                &request.portrait_root,
+                request.max_items,
+                &mut issues,
+            );
+        }
+    }
+    if !update_selected {
         issues.push(issue(
             "error",
             "更新项",
@@ -825,36 +1156,66 @@ pub async fn preflight_listed_update(
             "ozon",
         ));
     }
+    if request.update_video && clean_strings(request.template_video_links.clone()).is_empty() {
+        issues.push(issue(
+            "error",
+            "视频链接",
+            "更新视频时请至少填写一个 http/https 视频链接",
+            "填写视频链接",
+            "ozon",
+        ));
+    }
     if let Some((shop, api_key)) = shops.first() {
-        if let Ok(rows) = excel::read_content_rows(Path::new(&request.excel_path)) {
-            let offer_ids = rows
-                .into_iter()
-                .take(20)
-                .map(|row| row.sku)
-                .filter(|sku| !sku.trim().is_empty())
-                .collect::<Vec<_>>();
-            if !offer_ids.is_empty() {
-                match OzonSellerClient::new(shop.client_id.clone(), api_key.clone()) {
-                    Ok(client) => {
+        match OzonSellerClient::new(shop.client_id.clone(), api_key.clone()) {
+            Ok(client) => {
+                if let Some(category) = request.category_update.as_ref() {
+                    match client
+                        .list_products_by_category(category.category_id, category.type_id, 1)
+                        .await
+                    {
+                        Ok(rows) if rows.is_empty() => issues.push(issue(
+                            "warn",
+                            "商品分类",
+                            "所选分类当前没有查询到商品，提交后可能不会更新任何商品",
+                            "检查分类",
+                            "ozon",
+                        )),
+                        Ok(_) => {}
+                        Err(error) => issues.push(issue(
+                            "warn",
+                            "商品分类",
+                            &format!("抽样拉取类目商品失败：{}", error),
+                            "测试 Ozon",
+                            "ozon",
+                        )),
+                    }
+                } else if let Ok(rows) = read_listed_update_rows(&request) {
+                    let offer_ids = rows
+                        .into_iter()
+                        .take(20)
+                        .map(|row| row.sku)
+                        .filter(|sku| !sku.trim().is_empty())
+                        .collect::<Vec<_>>();
+                    if !offer_ids.is_empty() {
                         if let Err(error) = client.product_info(offer_ids).await {
                             issues.push(issue(
                                 "warn",
                                 "线上商品",
                                 &format!("抽样拉取线上商品失败：{}", error),
                                 "测试 Ozon",
-                                "settings",
+                                "ozon",
                             ));
                         }
                     }
-                    Err(error) => issues.push(issue(
-                        "error",
-                        "Ozon",
-                        &error.to_string(),
-                        "去设置",
-                        "settings",
-                    )),
                 }
             }
+            Err(error) => issues.push(issue(
+                "error",
+                "Ozon",
+                &error.to_string(),
+                "去店铺管理",
+                "ozon",
+            )),
         }
     }
     if issues.is_empty() {
@@ -915,15 +1276,85 @@ pub fn start_listed_update(
             oss_secret,
         }
     };
-    let job = state.jobs.create_job(
-        JobKind::ListedUpdate,
-        "按货号更新已上架商品".into(),
-        Some(request.excel_path.clone()),
-    );
+    let task_title = listed_update_job_title(&request, &runtime.shop.name);
+    let task_input = listed_update_job_input(&request, &runtime.shop.name);
+    let job = state
+        .jobs
+        .create_job(JobKind::ListedUpdate, task_title, task_input);
     let jobs = state.jobs.clone();
     let job_id = job.id.clone();
     tauri::async_runtime::spawn(batch::run_listed_update(jobs, job_id, request, runtime));
     Ok(job)
+}
+
+fn listed_update_job_title(request: &ListedUpdateRequest, shop_name: &str) -> String {
+    if let Some(category) = request.category_update.as_ref() {
+        let action = if request.update_video
+            && !request.update_title
+            && !request.update_description
+            && !request.update_images
+            && !request.update_rich_json
+        {
+            "全类目视频更新"
+        } else {
+            "全类目商品更新"
+        };
+        return format!(
+            "{} - {} - {}",
+            action,
+            shop_name,
+            category.category_name.as_deref().unwrap_or("未命名类目")
+        );
+    }
+    format!("按货号更新已上架商品 - {shop_name}")
+}
+
+fn listed_update_job_input(request: &ListedUpdateRequest, shop_name: &str) -> Option<String> {
+    request.category_update.as_ref().map_or_else(
+        || Some(request.excel_path.clone()),
+        |category| {
+            Some(format!(
+                "{} / 类目:{} / 类型:{}",
+                shop_name,
+                category.category_id,
+                category
+                    .type_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into())
+            ))
+        },
+    )
+}
+
+#[tauri::command]
+pub fn reserve_order_shipping_labels(
+    state: State<'_, AppState>,
+    assignments: Vec<OrderShippingLabelAssignment>,
+) -> Result<(), String> {
+    if assignments.is_empty() {
+        return Err("请至少提供一个物流贴单地址".into());
+    }
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "数据库状态锁定失败".to_string())?;
+    db.reserve_order_shipping_labels(&assignments)
+        .map_err(to_string)
+}
+
+#[tauri::command]
+pub async fn download_order_shipping_labels(
+    state: State<'_, AppState>,
+    request: OrderShippingLabelDownloadRequest,
+) -> Result<(), String> {
+    let db_path = state
+        .db
+        .lock()
+        .map_err(|_| "数据库状态锁定失败".to_string())?
+        .path();
+    order_docs::download_shipping_labels(&request, db_path)
+        .await
+        .map_err(to_string)
 }
 
 #[tauri::command]
@@ -967,15 +1398,37 @@ pub fn start_order_documents(
         }
     }
     order_docs::validate_request(&request).map_err(to_string)?;
+    {
+        let assignments = request
+            .shipping_labels
+            .iter()
+            .map(|label| OrderShippingLabelAssignment {
+                shop_id: request.shop_id.clone(),
+                order_number: label.order_number.clone(),
+                url: label.url.clone(),
+            })
+            .collect::<Vec<_>>();
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        db.reserve_order_shipping_labels(&assignments)
+            .map_err(to_string)?;
+    }
     let job = state.jobs.create_job(
         JobKind::OrderDocuments,
         "订单文件下载".into(),
         Some(request.order_numbers.join(",")),
     );
     let jobs = state.jobs.clone();
+    let db_path = state
+        .db
+        .lock()
+        .map_err(|_| "数据库状态锁定失败".to_string())?
+        .path();
     let job_id = job.id.clone();
     tauri::async_runtime::spawn(order_docs::run_order_documents_job(
-        jobs, job_id, request, client,
+        jobs, job_id, request, client, db_path,
     ));
     Ok(job)
 }
@@ -1016,21 +1469,142 @@ pub async fn list_order_postings(
             .map_err(|_| "数据库状态锁定失败".to_string())?;
         db.get_shop(&request.shop_id).map_err(to_string)?
     };
-    let (since, to) = order_date_range(&request.date_from, &request.date_to)?;
-    let mut rows = ozon_client(&state, &request.shop_id)?
-        .fbs_posting_list(
-            since,
-            to,
-            request.status.unwrap_or_default(),
-            request.limit.unwrap_or(100),
-        )
-        .await
-        .map_err(to_string)?;
+    let ranges = order_date_ranges(&request.date_from, &request.date_to)?;
+    let status = request.status.clone().unwrap_or_default();
+    let limit = request.limit.unwrap_or(100).clamp(1, 5000);
+    let client = ozon_client(&state, &request.shop_id)?;
+    let mut rows_by_key: HashMap<String, OrderPostingRow> = HashMap::new();
+    let mut errors = Vec::new();
+    for (since, to) in ranges {
+        match client
+            .fbs_posting_list(since.clone(), to.clone(), status.clone(), limit)
+            .await
+        {
+            Ok(rows) => {
+                for row in rows {
+                    rows_by_key.insert(
+                        format!(
+                            "{}::{}",
+                            row.posting_kind.as_deref().unwrap_or("fbs"),
+                            row.posting_number
+                        ),
+                        row,
+                    );
+                }
+            }
+            Err(error) => errors.push(format!("FBS {since} - {to}: {error}")),
+        }
+        match client
+            .fbo_posting_list(since.clone(), to.clone(), status.clone(), limit)
+            .await
+        {
+            Ok(rows) => {
+                for row in rows {
+                    rows_by_key.insert(
+                        format!(
+                            "{}::{}",
+                            row.posting_kind.as_deref().unwrap_or("fbo"),
+                            row.posting_number
+                        ),
+                        row,
+                    );
+                }
+            }
+            Err(error) => errors.push(format!("FBO {since} - {to}: {error}")),
+        }
+        if rows_by_key.len() >= limit as usize {
+            break;
+        }
+    }
+    if rows_by_key.is_empty() && !errors.is_empty() {
+        return Err(format!("订单同步失败：{}", errors.join("；")).into());
+    }
+    let mut rows = rows_by_key.into_values().collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        let left_time = left
+            .in_process_at
+            .as_deref()
+            .or(left.shipment_date.as_deref())
+            .unwrap_or_default();
+        let right_time = right
+            .in_process_at
+            .as_deref()
+            .or(right.shipment_date.as_deref())
+            .unwrap_or_default();
+        right_time.cmp(left_time)
+    });
+    rows.truncate(limit as usize);
+    if let Err(error) = client.enrich_order_posting_images(&mut rows).await {
+        eprintln!("订单商品主图补齐失败: {error:#}");
+    }
+    let synced_at = chrono::Utc::now().to_rfc3339();
     for row in &mut rows {
         row.shop_id = Some(shop.id.clone());
         row.shop_name = Some(shop.name.clone());
+        row.synced_at = Some(synced_at.clone());
+    }
+    {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        db.save_order_postings(&rows).map_err(to_string)?;
     }
     Ok(rows)
+}
+
+#[tauri::command]
+pub fn list_saved_order_postings(
+    state: State<'_, AppState>,
+    query: StoredOrderQuery,
+) -> Result<Vec<OrderPostingRow>, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "数据库状态锁定失败".to_string())?;
+    db.list_saved_order_postings(query).map_err(to_string)
+}
+
+#[tauri::command]
+pub async fn ship_order_posting(
+    state: State<'_, AppState>,
+    shop_id: String,
+    posting_number: String,
+) -> Result<OrderPostingRow, String> {
+    if shop_id.trim().is_empty() {
+        return Err("请先选择店铺".into());
+    }
+    let posting_number = posting_number.trim().to_string();
+    if posting_number.is_empty() {
+        return Err("请先选择要备货的货件".into());
+    }
+    let shop = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        db.get_shop(&shop_id).map_err(to_string)?
+    };
+    let client = ozon_client(&state, &shop_id)?;
+    client
+        .ship_fbs_posting(&posting_number)
+        .await
+        .map_err(to_string)?;
+    let mut row = client
+        .fbs_posting_row(&posting_number)
+        .await
+        .map_err(to_string)?;
+    row.shop_id = Some(shop.id.clone());
+    row.shop_name = Some(shop.name.clone());
+    row.synced_at = Some(chrono::Utc::now().to_rfc3339());
+    {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        db.save_order_posting(&row).map_err(to_string)?;
+    }
+    Ok(row)
 }
 
 #[tauri::command]
@@ -1090,6 +1664,98 @@ pub fn start_follow_automation(
     let jobs = state.jobs.clone();
     let job_id = job.id.clone();
     tauri::async_runtime::spawn(follow::run_follow_automation(jobs, job_id, pairs, request));
+    Ok(job)
+}
+
+#[tauri::command]
+pub fn start_listing_maintenance(
+    state: State<'_, AppState>,
+    request: ListingMaintenanceRequest,
+) -> Result<JobSummary, String> {
+    if request.shop_id.trim().is_empty() {
+        return Err("请先选择店铺".into());
+    }
+    if let Some(job) = state.jobs.list_jobs().into_iter().find(|job| {
+        job.kind == JobKind::ListingMaintenance
+            && matches!(
+                job.status,
+                crate::core::models::JobStatus::Queued | crate::core::models::JobStatus::Running
+            )
+            && job.input_path.as_deref() == Some(request.shop_id.as_str())
+    }) {
+        state.jobs.log(
+            &job.id,
+            "warn",
+            "收到新的店铺自动运维启动请求，旧任务将停止，并使用最新配置重新启动。",
+        );
+        state.jobs.cancel(&job.id);
+    }
+    let (runtime_shop, effective_request) = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "数据库状态锁定失败".to_string())?;
+        let shop = db.get_shop(&request.shop_id).map_err(to_string)?;
+        let ozon_api_key = db.shop_api_key(&shop.id).map_err(to_string)?;
+        let configured_action_enabled =
+            shop.maintenance_action_enabled || !shop.maintenance_action_configs.is_empty();
+        let request_has_enabled_module = request.auto_update_stock
+            || request.auto_generate_barcode
+            || request.auto_add_to_action;
+        let effective_request = ListingMaintenanceRequest {
+            interval_minutes: if request.interval_minutes > 0 {
+                request.interval_minutes
+            } else {
+                shop.maintenance_interval_minutes.unwrap_or(5)
+            },
+            auto_update_stock: if request_has_enabled_module {
+                request.auto_update_stock
+            } else {
+                shop.maintenance_stock_enabled
+            },
+            auto_generate_barcode: if request_has_enabled_module {
+                request.auto_generate_barcode
+            } else {
+                shop.maintenance_barcode_enabled
+            },
+            auto_add_to_action: if request_has_enabled_module {
+                request.auto_add_to_action
+            } else {
+                configured_action_enabled
+            },
+            warehouse_id: request.warehouse_id.or(shop.maintenance_warehouse_id),
+            stock: request.stock.or(shop.maintenance_stock).or(Some(50)),
+            action_configs: if request.action_configs.is_empty() {
+                shop.maintenance_action_configs.clone()
+            } else {
+                request.action_configs.clone()
+            },
+            ..request.clone()
+        };
+        (
+            batch::RuntimeShopConfig {
+                shop,
+                ozon_api_key,
+                oss_secret: None,
+            },
+            effective_request,
+        )
+    };
+    validate_listing_maintenance_request(&effective_request)?;
+
+    let job = state.jobs.create_job(
+        JobKind::ListingMaintenance,
+        "店铺自动运维".into(),
+        Some(effective_request.shop_id.clone()),
+    );
+    let jobs = state.jobs.clone();
+    let job_id = job.id.clone();
+    tauri::async_runtime::spawn(listing_maintenance::run_listing_maintenance(
+        jobs,
+        job_id,
+        effective_request,
+        runtime_shop,
+    ));
     Ok(job)
 }
 
@@ -1182,6 +1848,41 @@ fn validate_follow_automation_request(request: &FollowAutomationRequest) -> Resu
     Ok(())
 }
 
+fn validate_listing_maintenance_request(request: &ListingMaintenanceRequest) -> Result<(), String> {
+    if request.shop_id.trim().is_empty() {
+        return Err("请先选择店铺".into());
+    }
+    if !(request.auto_update_stock || request.auto_generate_barcode || request.auto_add_to_action) {
+        return Err("请至少选择库存、条码或活动中的一个自动运维任务".into());
+    }
+    if request.interval_minutes <= 0 {
+        return Err("定时执行间隔必须大于 0 分钟".into());
+    }
+    if request.auto_update_stock && request.stock.unwrap_or(50) < 0 {
+        return Err("自动补库存数量不能小于 0".into());
+    }
+    if request.auto_add_to_action {
+        if request.action_configs.is_empty() {
+            return Err("启用自动参加活动后，请至少配置一条类目活动规则".into());
+        }
+        for config in &request.action_configs {
+            if config.category_id <= 0 {
+                return Err("活动规则缺少类目".into());
+            }
+            if config.action_id <= 0 {
+                return Err("活动规则缺少活动".into());
+            }
+            if config.action_price.trim().is_empty() {
+                return Err("活动规则缺少活动价格".into());
+            }
+            if config.action_stock <= 0 {
+                return Err("活动库存必须大于 0".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_follow_price_multiplier(value: Option<f64>) -> Result<f64, String> {
     let multiplier = value.unwrap_or(follow::DEFAULT_FOLLOW_PRICE_MULTIPLIER);
     if !multiplier.is_finite() {
@@ -1222,7 +1923,69 @@ pub fn start_materials_job(
 }
 
 #[tauri::command]
-pub async fn list_ai_models(base_url: String, provider: String) -> Result<Vec<String>, String> {
+pub fn scan_gallery_upload_files(paths: Vec<String>) -> Result<GalleryUploadSelection, String> {
+    gallery_upload::scan_image_files(paths).map_err(to_string)
+}
+
+#[tauri::command]
+pub fn start_gallery_upload_job(
+    state: State<'_, AppState>,
+    request: GalleryUploadRequest,
+) -> Result<JobSummary, String> {
+    if request.paths.is_empty() {
+        return Err("请先选择要上传的图片或文件夹".into());
+    }
+    let source = request
+        .source_label
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("客户端选择图片");
+    let job = state.jobs.create_job(
+        JobKind::GalleryUpload,
+        format!("云图库图片上传 - {source}"),
+        Some(source.to_string()),
+    );
+    let db_path = state
+        .db
+        .lock()
+        .map_err(|_| "数据库状态锁定失败".to_string())?
+        .path();
+    if let Err(error) = gallery_upload::persist_gallery_upload_job(&db_path, &job.id, &request) {
+        state.jobs.fail(&job.id, error.to_string());
+        return Err(error.to_string());
+    }
+    let jobs = state.jobs.clone();
+    let job_id = job.id.clone();
+    tauri::async_runtime::spawn(gallery_upload::run_persisted_gallery_upload_job(
+        jobs, db_path, job_id,
+    ));
+    Ok(job)
+}
+
+#[tauri::command]
+pub async fn list_ai_models(
+    base_url: String,
+    provider: String,
+    cloud_auth_token: Option<String>,
+    kind: Option<String>,
+) -> Result<Vec<String>, String> {
+    if ai::is_cloud_proxy_provider(&provider) {
+        let token = cloud_auth_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "请先登录会员账号，再刷新云端 AI 模型".to_string())?;
+        return ai::OpenAiCompatibleClient::new_cloud_proxy(
+            base_url,
+            token,
+            kind.unwrap_or_else(|| "text".to_string()),
+        )
+        .map_err(to_string)?
+        .list_models()
+        .await
+        .map_err(to_string);
+    }
     let key = provider_secret_for_models(&provider)
         .map_err(|_| format!("未找到 {provider} 密钥，请先保存 API Key"))?;
     ai::OpenAiCompatibleClient::new(base_url, key)
@@ -1290,11 +2053,15 @@ pub fn start_local_scene_job(
     state: State<'_, AppState>,
     request: LocalSceneRequest,
 ) -> Result<JobSummary, String> {
-    let job = state.jobs.create_job(
-        JobKind::SceneLocal,
-        "本地场景图合成".into(),
-        Some(request.source_root.clone()),
-    );
+    let input_path = request
+        .single_image
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| Some(request.source_root.clone()));
+    let job = state
+        .jobs
+        .create_job(JobKind::SceneLocal, "本地场景图合成".into(), input_path);
     let jobs = state.jobs.clone();
     let job_id = job.id.clone();
     tauri::async_runtime::spawn(media::run_local_scene_job(jobs, job_id, request));
@@ -1317,6 +2084,15 @@ pub fn list_jobs(state: State<'_, AppState>) -> Result<Vec<JobSummary>, String> 
 
 #[tauri::command]
 pub fn list_job_logs(state: State<'_, AppState>, job_id: String) -> Result<Vec<JobLog>, String> {
+    let persisted = state
+        .db
+        .lock()
+        .map_err(|_| "数据库状态锁定失败".to_string())?
+        .list_job_logs(&job_id)
+        .map_err(to_string)?;
+    if !persisted.is_empty() {
+        return Ok(persisted);
+    }
     Ok(state.jobs.list_logs(&job_id))
 }
 
@@ -1448,6 +2224,18 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     Err("文件选择功能暂不支持当前系统，请手动输入路径".into())
 }
 
+#[tauri::command]
+pub fn pick_image_files() -> Result<Vec<String>, String> {
+    #[cfg(target_os = "windows")]
+    return pick_images_with_powershell();
+
+    #[cfg(target_os = "macos")]
+    return pick_images_with_osascript();
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    Err("多图片选择功能暂不支持当前系统，请选择文件夹上传".into())
+}
+
 #[cfg(target_os = "macos")]
 fn pick_with_osascript(script: &str) -> Result<String, String> {
     let output = std::process::Command::new("osascript")
@@ -1466,6 +2254,54 @@ fn pick_with_powershell(script: &str) -> Result<String, String> {
     pick_output_to_path(output)
 }
 
+#[cfg(target_os = "windows")]
+fn pick_images_with_powershell() -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-STA",
+            "-Command",
+            r#"
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.CheckFileExists = $true
+$dialog.Multiselect = $true
+$dialog.Filter = '图片文件|*.png;*.jpg;*.jpeg;*.webp|所有文件|*.*'
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  foreach ($file in $dialog.FileNames) {
+    [Console]::WriteLine($file)
+  }
+}
+"#,
+        ])
+        .output()
+        .map_err(|e| format!("无法打开图片选择对话框: {}", e))?;
+    pick_output_to_paths(output)
+}
+
+#[cfg(target_os = "macos")]
+fn pick_images_with_osascript() -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            r#"set pickedFiles to choose file of type {"public.png", "public.jpeg", "org.webmproject.webp"} with multiple selections allowed"#,
+            "-e",
+            r#"set output to "" "#,
+            "-e",
+            r#"repeat with pickedFile in pickedFiles"#,
+            "-e",
+            r#"set output to output & POSIX path of pickedFile & linefeed"#,
+            "-e",
+            r#"end repeat"#,
+            "-e",
+            r#"return output"#,
+        ])
+        .output()
+        .map_err(|e| format!("无法打开图片选择对话框: {}", e))?;
+    pick_output_to_paths(output)
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn pick_output_to_path(output: std::process::Output) -> Result<String, String> {
     if !output.status.success() {
@@ -1480,6 +2316,28 @@ fn pick_output_to_path(output: std::process::Output) -> Result<String, String> {
         Err("用户取消了选择".into())
     } else {
         Ok(path)
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn pick_output_to_paths(output: std::process::Output) -> Result<Vec<String>, String> {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            return Err("无法打开图片选择对话框".into());
+        }
+        return Err(format!("无法打开图片选择对话框: {stderr}"));
+    }
+    let paths = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        Err("用户取消了选择".into())
+    } else {
+        Ok(paths)
     }
 }
 
@@ -1513,7 +2371,15 @@ fn clean_product_ids(values: Vec<i64>) -> Vec<i64> {
         .collect()
 }
 
-fn order_date_range(date_from: &str, date_to: &str) -> Result<(String, String), String> {
+fn order_date_ranges(date_from: &str, date_to: &str) -> Result<Vec<(String, String)>, String> {
+    order_date_ranges_with_offset(date_from, date_to, chrono::Local::now().offset().fix())
+}
+
+fn order_date_ranges_with_offset(
+    date_from: &str,
+    date_to: &str,
+    offset: chrono::FixedOffset,
+) -> Result<Vec<(String, String)>, String> {
     let from = chrono::NaiveDate::parse_from_str(date_from.trim(), "%Y-%m-%d")
         .map_err(|_| "订单开始日期格式不正确".to_string())?;
     let to = chrono::NaiveDate::parse_from_str(date_to.trim(), "%Y-%m-%d")
@@ -1521,17 +2387,37 @@ fn order_date_range(date_from: &str, date_to: &str) -> Result<(String, String), 
     if from > to {
         return Err("订单开始日期不能晚于结束日期".into());
     }
-    let since = from
-        .and_hms_opt(0, 0, 0)
-        .ok_or_else(|| "订单开始日期无效".to_string())?
-        .and_utc()
-        .to_rfc3339();
-    let to = to
-        .and_hms_opt(23, 59, 59)
-        .ok_or_else(|| "订单结束日期无效".to_string())?
-        .and_utc()
-        .to_rfc3339();
-    Ok((since, to))
+    let mut ranges = Vec::new();
+    let mut cursor = from;
+    while cursor <= to {
+        let range_to = std::cmp::min(cursor + chrono::Duration::days(364), to);
+        let since = local_order_boundary_to_utc(
+            cursor
+                .and_hms_milli_opt(0, 0, 0, 0)
+                .ok_or_else(|| "订单开始日期无效".to_string())?,
+            offset,
+        )?;
+        let until = local_order_boundary_to_utc(
+            range_to
+                .and_hms_milli_opt(23, 59, 59, 999)
+                .ok_or_else(|| "订单结束日期无效".to_string())?,
+            offset,
+        )?;
+        ranges.push((since, until));
+        cursor = range_to + chrono::Duration::days(1);
+    }
+    Ok(ranges)
+}
+
+fn local_order_boundary_to_utc(
+    value: chrono::NaiveDateTime,
+    offset: chrono::FixedOffset,
+) -> Result<String, String> {
+    offset
+        .from_local_datetime(&value)
+        .single()
+        .ok_or_else(|| "订单日期时区转换失败".to_string())
+        .map(|date| date.with_timezone(&chrono::Utc).to_rfc3339())
 }
 
 fn build_category_price_payloads(
@@ -1609,7 +2495,14 @@ fn analyze_material_source(root: &Path) -> anyhow::Result<SkuFolderReport> {
     })
 }
 
-fn provider_secret_exists(kind: &str, provider: &str) -> bool {
+fn provider_secret_exists(kind: &str, provider: &str, request: &MaterialsRequest) -> bool {
+    if ai::is_cloud_proxy_provider(provider) {
+        return request
+            .cloud_auth_token
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+    }
     secrets::get_secret(&secrets::provider_api_key_id(kind, provider)).is_ok()
 }
 
@@ -1617,9 +2510,17 @@ fn text_provider_secret_exists(request: &MaterialsRequest) -> bool {
     if ai::is_ollama_provider(&request.text_provider) {
         return true;
     }
-    provider_secret_exists("text", &request.text_provider)
+    provider_secret_exists("text", &request.text_provider, request)
         || (request.text_provider == request.image_provider
-            && provider_secret_exists("image", &request.image_provider))
+            && provider_secret_exists("image", &request.image_provider, request))
+}
+
+fn ai_key_missing_message(provider: &str) -> String {
+    if ai::is_cloud_proxy_provider(provider) {
+        "请先登录会员账号，再使用云端 AI 功能".to_string()
+    } else {
+        "AI Key 未保存".to_string()
+    }
 }
 
 fn provider_secret_for_models(provider: &str) -> Result<String, anyhow::Error> {
@@ -1653,8 +2554,8 @@ fn shops_for_preflight(
                         "error",
                         &shop.name,
                         &format!("Ozon API Key 未保存：{}", error),
-                        "去设置",
-                        "settings",
+                        "去店铺管理",
+                        "ozon",
                     )),
                 }
                 if require_oss {
@@ -1664,8 +2565,8 @@ fn shops_for_preflight(
                             "error",
                             &shop.name,
                             "OSS 配置不完整，请先在主店配置 OSS",
-                            "去设置",
-                            "settings",
+                            "去店铺管理",
+                            "ozon",
                         ));
                     }
                 }
@@ -1674,8 +2575,8 @@ fn shops_for_preflight(
                 "error",
                 "店铺",
                 &error.to_string(),
-                "去设置",
-                "settings",
+                "去店铺管理",
+                "ozon",
             )),
         }
     }
@@ -1694,8 +2595,8 @@ fn check_shop_watermarks(shops: &[(Shop, String)], issues: &mut Vec<PreflightIss
                 "error",
                 &shop.name,
                 "店铺水印图片未配置，上架前必须先设置每店水印",
-                "去设置",
-                "settings",
+                "去店铺管理",
+                "ozon",
             ));
             continue;
         };
@@ -1704,8 +2605,8 @@ fn check_shop_watermarks(shops: &[(Shop, String)], issues: &mut Vec<PreflightIss
                 "error",
                 &shop.name,
                 &format!("店铺水印图片不存在: {path}"),
-                "去设置",
-                "settings",
+                "去店铺管理",
+                "ozon",
             ));
         }
     }
@@ -1845,6 +2746,173 @@ fn check_excel_and_images(
     }
 }
 
+fn update_requires_full_excel(request: &ListedUpdateRequest) -> bool {
+    request.update_title || request.update_description || request.update_rich_json
+}
+
+fn read_listed_update_rows(request: &ListedUpdateRequest) -> anyhow::Result<Vec<ContentRow>> {
+    if update_requires_full_excel(request) {
+        excel::read_content_rows(Path::new(&request.excel_path))
+    } else {
+        excel::read_sku_rows(Path::new(&request.excel_path))
+    }
+}
+
+fn check_listed_update_excel(
+    excel_path: &str,
+    max_items: Option<i64>,
+    require_full_excel: bool,
+    issues: &mut Vec<PreflightIssue>,
+) {
+    let excel_path = PathBuf::from(excel_path);
+    if !excel_path.is_file() {
+        issues.push(issue(
+            "error",
+            "Excel",
+            "Excel 文件不存在或未选择",
+            "选择 Excel",
+            "ozon",
+        ));
+        return;
+    }
+    let mut rows = match if require_full_excel {
+        excel::read_content_rows(&excel_path)
+    } else {
+        excel::read_sku_rows(&excel_path)
+    } {
+        Ok(rows) => rows,
+        Err(error) => {
+            issues.push(issue(
+                "error",
+                "Excel",
+                &error.to_string(),
+                "检查 Excel",
+                "ozon",
+            ));
+            return;
+        }
+    };
+    if let Some(max_items) = max_items.filter(|value| *value > 0) {
+        rows.truncate(max_items as usize);
+    }
+    if rows.is_empty() {
+        issues.push(issue(
+            "error",
+            "Excel",
+            "Excel 没有可处理货号",
+            "检查 Excel",
+            "ozon",
+        ));
+        return;
+    }
+    let empty_title = rows
+        .iter()
+        .filter(|row| row.title.trim().is_empty())
+        .count();
+    issues.push(issue(
+        "info",
+        "Excel",
+        &format!(
+            "Excel {} 个 SKU{}",
+            rows.len(),
+            if require_full_excel {
+                "，将读取标题/简介等内容"
+            } else {
+                "，本次只需要货号列"
+            }
+        ),
+        "",
+        "",
+    ));
+    if require_full_excel && empty_title > 0 {
+        issues.push(issue(
+            "warn",
+            "Excel 文案",
+            &format!("{} 个 SKU 缺少标题，更新标题时会沿用线上标题", empty_title),
+            "检查 Excel",
+            "ozon",
+        ));
+    }
+}
+
+fn check_update_image_directory(
+    excel_path: &str,
+    portrait_root: &str,
+    max_items: Option<i64>,
+    issues: &mut Vec<PreflightIssue>,
+) {
+    let excel_path = PathBuf::from(excel_path);
+    let portrait_root = PathBuf::from(portrait_root);
+    if !excel_path.is_file() {
+        return;
+    }
+    if !portrait_root.is_dir() {
+        issues.push(issue(
+            "error",
+            "图片目录",
+            "勾选更新图片时必须选择图片目录",
+            "选择目录",
+            "ozon",
+        ));
+        return;
+    }
+    let mut rows = match excel::read_sku_rows(&excel_path) {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+    if let Some(max_items) = max_items.filter(|value| *value > 0) {
+        rows.truncate(max_items as usize);
+    }
+    if rows.is_empty() {
+        return;
+    }
+    let sku_set = rows
+        .iter()
+        .map(|row| row.sku.trim().to_string())
+        .collect::<HashSet<_>>();
+    let report = match business::analyze_sku_folder(&portrait_root) {
+        Ok(report) => report,
+        Err(error) => {
+            issues.push(issue(
+                "error",
+                "图片目录",
+                &error.to_string(),
+                "检查图片目录",
+                "ozon",
+            ));
+            return;
+        }
+    };
+    let image_skus = report
+        .rows
+        .iter()
+        .map(|row| row.sku.trim().to_string())
+        .collect::<HashSet<_>>();
+    let missing_images = sku_set
+        .iter()
+        .filter(|sku| !image_skus.contains(*sku))
+        .count();
+    issues.push(issue(
+        "info",
+        "图片目录",
+        &format!(
+            "图片目录 {} 个 SKU、{} 张图片；本次只有勾选更新图片时才会使用",
+            report.sku_count, report.image_count
+        ),
+        "",
+        "",
+    ));
+    if missing_images > 0 {
+        issues.push(issue(
+            "warn",
+            "SKU 匹配",
+            &format!("{} 个 Excel SKU 没有对应图片文件夹", missing_images),
+            "检查图片目录",
+            "ozon",
+        ));
+    }
+}
+
 fn issue(
     level: &str,
     scope: &str,
@@ -1929,6 +2997,20 @@ mod tests {
     #[test]
     fn product_ids_remove_invalid_values_and_duplicates() {
         assert_eq!(clean_product_ids(vec![2, 0, 1, 2, -1, 1]), vec![2, 1]);
+    }
+
+    #[test]
+    fn order_date_ranges_use_local_day_boundaries() {
+        let offset = chrono::FixedOffset::east_opt(8 * 60 * 60).unwrap();
+        let ranges = order_date_ranges_with_offset("2026-07-11", "2026-07-11", offset).unwrap();
+
+        assert_eq!(
+            ranges,
+            vec![(
+                "2026-07-10T16:00:00+00:00".to_string(),
+                "2026-07-11T15:59:59.999+00:00".to_string(),
+            )]
+        );
     }
 
     fn product_row_for_price(offer_id: &str, currency_code: Option<&str>) -> OzonProductRow {

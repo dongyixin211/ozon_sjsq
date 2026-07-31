@@ -5,19 +5,19 @@ import { PathInput } from "../../lib/PathInput";
 import { hasBlockingIssues, PreflightPanel } from "../../lib/PreflightPanel";
 
 const XIAOQIAN_BASE_URL = "https://xiaoqian.art/v1";
-const PIXEL_BASE_URL = "https://ai-pixel.online/v1";
 const PIXEL_IMAGE_MODEL = "gpt-image-2";
 const DEFAULT_TITLE_PROMPT = "请根据商品信息生成适合 Ozon 的中文商品标题，只返回标题。货号：{sku}；图片：{image_names}。";
 const DEFAULT_IMAGE_PROMPT = "请基于参考商品图生成一张适合 Ozon 商品主图的高质量 3:4 竖版商品图。保持商品主体、图案、颜色和材质一致，背景干净，真实摄影质感，不添加文字、水印、logo 或边框。货号：{sku}；参考图片：{image_names}。";
 const MATERIAL_FORM_CACHE_KEY = "ozon-sjsq.materials-form.v1";
 
 type MaterialAction = "portrait" | "aiImage" | "title";
+type MaterialPageMode = MaterialAction | "rename";
 
 interface Props {
+  mode: MaterialPageMode;
   settings: AppSettings;
   onChanged: () => void;
   onJobStarted: () => void;
-  onNavigate: (page: "settings") => void;
 }
 
 interface MaterialFormDraft {
@@ -73,7 +73,7 @@ function isOllamaProvider(provider: string) {
 }
 
 function isPixelProvider(provider: string) {
-  return provider.trim().toLowerCase() === "pixel";
+  return provider.trim().toLowerCase() === "pixel" || provider.trim().toLowerCase() === "cloud-proxy";
 }
 
 function readMaterialForm(settings: AppSettings): MaterialFormDraft {
@@ -150,7 +150,7 @@ function chooseImageModel(models: string[], current: string) {
   return preferred || cleanCurrent || PIXEL_IMAGE_MODEL;
 }
 
-export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }: Props) {
+export function MaterialsPage({ mode, settings, onChanged, onJobStarted }: Props) {
   const [initialForm] = useState(() => readMaterialForm(settings));
   const settingsRef = useRef(settings);
   const onChangedRef = useRef(onChanged);
@@ -167,10 +167,6 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
   const [imageModelError, setImageModelError] = useState("");
   const [aiMaxItems, setAiMaxItems] = useState(initialForm.aiMaxItems);
   const [aiPrompt, setAiPrompt] = useState(initialForm.aiPrompt);
-  const [imageApiKey, setImageApiKey] = useState("");
-  const [savingImageApiKey, setSavingImageApiKey] = useState(false);
-  const [imageKeyMessage, setImageKeyMessage] = useState("");
-  const [imageKeyError, setImageKeyError] = useState("");
   const [titleSourceRoot, setTitleSourceRoot] = useState(initialForm.titleSourceRoot);
   const [titleOutputRoot, setTitleOutputRoot] = useState(initialForm.titleOutputRoot);
   const [titleMaxItems, setTitleMaxItems] = useState(initialForm.titleMaxItems);
@@ -178,10 +174,6 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
   const [titleModels, setTitleModels] = useState<string[]>([]);
   const [loadingTitleModels, setLoadingTitleModels] = useState(false);
   const [titleModelError, setTitleModelError] = useState("");
-  const [titleApiKey, setTitleApiKey] = useState("");
-  const [savingTitleApiKey, setSavingTitleApiKey] = useState(false);
-  const [titleKeyMessage, setTitleKeyMessage] = useState("");
-  const [titleKeyError, setTitleKeyError] = useState("");
   const [titlePrompt, setTitlePrompt] = useState(initialForm.titlePrompt);
   const [renameSourceRoot, setRenameSourceRoot] = useState(initialForm.renameSourceRoot);
   const [renameOutputRoot, setRenameOutputRoot] = useState(initialForm.renameOutputRoot);
@@ -247,12 +239,6 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
       defaultOutputRoot: portraitOutputRoot || settingsRef.current.defaultOutputRoot,
       watermarkPath,
       contentRoot: titleOutputRoot,
-      imageProvider: "pixel",
-      imageBaseUrl: PIXEL_BASE_URL,
-      imageModel: aiImageModel || PIXEL_IMAGE_MODEL,
-      textModel: titleModel || settingsRef.current.textModel,
-      imagePromptTemplate: aiPrompt || settingsRef.current.imagePromptTemplate,
-      titlePromptTemplate: titlePrompt,
       materialPortraitSourceRoot: portraitSourceRoot,
       materialPortraitOutputRoot: portraitOutputRoot,
       materialPortraitMaxItems: portraitMaxItems || 0,
@@ -272,13 +258,9 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
     portraitOutputRoot,
     watermarkPath,
     portraitMaxItems,
-    aiPrompt,
-    aiImageModel,
     titleSourceRoot,
     titleOutputRoot,
     titleMaxItems,
-    titleModel,
-    titlePrompt,
     renameSourceRoot,
     renameOutputRoot,
     renamePrefix,
@@ -292,6 +274,7 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
       const models = await api.listAiModels(
         currentSettings.textBaseUrl || XIAOQIAN_BASE_URL,
         currentSettings.textProvider || "xiaoqian",
+        "text",
       );
       setTitleModels(models);
       setTitleModel((current) => {
@@ -308,7 +291,12 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
     setLoadingImageModels(true);
     setImageModelError("");
     try {
-      const models = await api.listAiModels(PIXEL_BASE_URL, "pixel");
+      const currentSettings = settingsRef.current;
+      const models = await api.listAiModels(
+        currentSettings.imageBaseUrl,
+        currentSettings.imageProvider,
+        "image",
+      );
       setImageModels(models);
       setAiImageModel((current) => chooseImageModel(models, current));
     } catch (error) {
@@ -348,66 +336,6 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
     };
   }, []);
 
-  const saveTitleApiKey = async () => {
-    const apiKey = titleApiKey.trim();
-    setTitleKeyMessage("");
-    setTitleKeyError("");
-    if (isOllamaProvider(settingsRef.current.textProvider)) {
-      setTitleKeyMessage("本地 Ollama 无需 API Key。");
-      return;
-    }
-    if (!apiKey) {
-      setTitleKeyError("请先填写 API Key");
-      return;
-    }
-    setSavingTitleApiKey(true);
-    try {
-      await api.saveProviderSecrets(settingsRef.current, {
-        textApiKey: apiKey,
-      });
-      await saveMaterialSettings();
-      setTitleApiKey("");
-      setTitleKeyMessage("当前文案 Provider 的 API Key 已保存。");
-      await loadTitleModels();
-    } catch (error) {
-      setTitleKeyError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSavingTitleApiKey(false);
-    }
-  };
-
-  const saveImageApiKey = async () => {
-    const apiKey = imageApiKey.trim();
-    setImageKeyMessage("");
-    setImageKeyError("");
-    if (!apiKey) {
-      setImageKeyError("请先填写 API Key");
-      return;
-    }
-    setSavingImageApiKey(true);
-    try {
-      const imageSettings = await api.saveSettings({
-        ...settingsRef.current,
-        imageProvider: "pixel",
-        imageBaseUrl: PIXEL_BASE_URL,
-        imageModel: aiImageModel || PIXEL_IMAGE_MODEL,
-        imagePromptTemplate: aiPrompt || settingsRef.current.imagePromptTemplate,
-      });
-      settingsRef.current = imageSettings;
-      await api.saveProviderSecrets(imageSettings, {
-        imageApiKey: apiKey,
-      });
-      setImageApiKey("");
-      setImageKeyMessage("Pixel 图片 API Key 已保存。");
-      await onChangedRef.current();
-      await loadImageModels();
-    } catch (error) {
-      setImageKeyError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSavingImageApiKey(false);
-    }
-  };
-
   const materialRequest = (action: MaterialAction): MaterialsRequest => {
     const isPortrait = action === "portrait";
     const isAiImage = action === "aiImage";
@@ -419,15 +347,15 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
       portraitRoot: isPortrait ? portraitOutputRoot : isAiImage ? uploadRoot : "",
       contentRoot: isTitle ? titleOutputRoot : undefined,
       watermarkPath: isPortrait ? watermarkPath : undefined,
-      imageBaseUrl: isAiImage ? PIXEL_BASE_URL : currentSettings.imageBaseUrl,
+      imageBaseUrl: currentSettings.imageBaseUrl,
       textBaseUrl: currentSettings.textBaseUrl,
-      imageProvider: isAiImage ? "pixel" : currentSettings.imageProvider,
+      imageProvider: currentSettings.imageProvider,
       textProvider: currentSettings.textProvider,
-      imageModel: isAiImage ? aiImageModel || PIXEL_IMAGE_MODEL : currentSettings.imageModel,
-      textModel: titleModel || currentSettings.textModel,
-      imagePromptTemplate: isAiImage ? aiPrompt : "",
-      titlePromptTemplate: titlePrompt,
-      descriptionPromptTemplate: "",
+      imageModel: currentSettings.imageModel || aiImageModel || PIXEL_IMAGE_MODEL,
+      textModel: currentSettings.textModel || titleModel,
+      imagePromptTemplate: isAiImage ? currentSettings.imagePromptTemplate || aiPrompt : "",
+      titlePromptTemplate: currentSettings.titlePromptTemplate || titlePrompt,
+      descriptionPromptTemplate: currentSettings.descriptionPromptTemplate,
       generateAiImages: isAiImage,
       convertOriginals: isPortrait,
       generateCopy: isTitle,
@@ -484,15 +412,16 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
 
   const renameExample = `${renamePrefix.trim() || "前缀"}001.jpg`;
   const isBusy = checkingAction !== null;
-  const titleProviderIsOllama = isOllamaProvider(settings.textProvider);
   const titleProviderIsPixel = isPixelProvider(settings.textProvider);
   const titleBaseUrl =
     settings.textBaseUrl
-    || (titleProviderIsPixel ? PIXEL_BASE_URL : XIAOQIAN_BASE_URL);
+    || (titleProviderIsPixel ? settings.textBaseUrl : XIAOQIAN_BASE_URL);
+  const imageProviderLabel = settings.imageProvider === "cloud-proxy" ? "云端统一配置" : settings.imageBaseUrl;
+  const textProviderLabel = settings.textProvider === "cloud-proxy" ? "云端统一配置" : titleBaseUrl;
 
   return (
     <div className="content-grid">
-      <section className="panel half">
+      {mode === "portrait" ? <section className="panel">
         <div className="panel-header">
           <div>
             <h2>转 3:4 + 水印</h2>
@@ -525,9 +454,9 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
             <input type="number" min={0} value={portraitMaxItems} onChange={(event) => setPortraitMaxItems(Number(event.target.value))} />
           </div>
         </div>
-      </section>
+      </section> : null}
 
-      <section className="panel half">
+      {mode === "aiImage" ? <section className="panel">
         <div className="panel-header">
           <div>
             <h2>GPT 图片生成</h2>
@@ -549,29 +478,11 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
           </div>
           <div className="field">
             <label>AI 接口</label>
-            <input value={PIXEL_BASE_URL} readOnly />
+            <input value={imageProviderLabel} readOnly />
           </div>
           <div className="field">
             <label>AI 模型</label>
-            {imageModels.length > 0 ? (
-              <select value={aiImageModel} onChange={(event) => setAiImageModel(event.target.value)}>
-                {!imageModels.includes(aiImageModel) && aiImageModel ? <option value={aiImageModel}>{aiImageModel}</option> : null}
-                {imageModels.map((model) => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-              </select>
-            ) : (
-              <input value={aiImageModel} onChange={(event) => setAiImageModel(event.target.value)} placeholder={PIXEL_IMAGE_MODEL} />
-            )}
-          </div>
-          <div className="field">
-            <label>图片 API Key</label>
-            <input
-              type="password"
-              value={imageApiKey}
-              onChange={(event) => setImageApiKey(event.target.value)}
-              placeholder="填写 Pixel API Key 并保存"
-            />
+            <input value={settings.imageModel || aiImageModel || PIXEL_IMAGE_MODEL} readOnly />
           </div>
           <div className="field">
             <label>数量上限 (0=不限)</label>
@@ -579,23 +490,19 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
           </div>
           <div className="field full">
             <label>图片 Prompt</label>
-            <textarea rows={4} value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} />
+            <textarea rows={4} value={settings.imagePromptTemplate || aiPrompt} readOnly />
           </div>
         </div>
         <div className="toolbar" style={{ marginTop: 8 }}>
-          <button className="secondary-button" onClick={saveImageApiKey} disabled={savingImageApiKey}>
-            {savingImageApiKey ? "保存中" : "保存 API Key"}
-          </button>
           <button className="secondary-button" onClick={loadImageModels} disabled={loadingImageModels}>
             {loadingImageModels ? "加载中" : "刷新模型"}
           </button>
-          {imageKeyMessage ? <span className="muted">{imageKeyMessage}</span> : null}
-          {imageKeyError ? <span className="error-text">{imageKeyError}</span> : null}
           {imageModelError ? <span className="error-text">{imageModelError}</span> : null}
+          {imageModels.length > 0 ? <span className="muted">云端可用模型 {imageModels.length} 个</span> : null}
         </div>
-      </section>
+      </section> : null}
 
-      <section className="panel half">
+      {mode === "title" ? <section className="panel">
         <div className="panel-header">
           <div>
             <h2>AI 生成标题</h2>
@@ -621,36 +528,11 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
           </div>
           <div className="field">
             <label>AI 接口</label>
-            <input value={titleBaseUrl} readOnly />
+            <input value={textProviderLabel} readOnly />
           </div>
           <div className="field">
             <label>AI 模型</label>
-            {titleModels.length > 0 ? (
-              <select value={titleModel} onChange={(event) => setTitleModel(event.target.value)}>
-                {!titleModels.includes(titleModel) && titleModel ? <option value={titleModel}>{titleModel}</option> : null}
-                {titleModels.map((model) => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-              </select>
-            ) : (
-              <input value={titleModel} onChange={(event) => setTitleModel(event.target.value)} placeholder="填写模型名" />
-            )}
-          </div>
-          <div className="field">
-            <label>文案 API Key</label>
-            <input
-              type="password"
-              value={titleApiKey}
-              onChange={(event) => setTitleApiKey(event.target.value)}
-              disabled={titleProviderIsOllama}
-              placeholder={
-                titleProviderIsOllama
-                  ? "Ollama 无需 API Key"
-                  : titleProviderIsPixel
-                    ? "填写 Pixel API Key 并保存"
-                    : "填写后保存，之后默认使用"
-              }
-            />
+            <input value={settings.textModel || titleModel} readOnly />
           </div>
           <div className="field">
             <label>数量上限 (0=不限)</label>
@@ -658,23 +540,19 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
           </div>
           <div className="field full">
             <label>标题 Prompt</label>
-            <textarea rows={4} value={titlePrompt} onChange={(event) => setTitlePrompt(event.target.value)} />
+            <textarea rows={4} value={settings.titlePromptTemplate || titlePrompt} readOnly />
           </div>
         </div>
         <div className="toolbar" style={{ marginTop: 8 }}>
-          <button className="secondary-button" onClick={saveTitleApiKey} disabled={savingTitleApiKey}>
-            {savingTitleApiKey ? "保存中" : "保存 API Key"}
-          </button>
           <button className="secondary-button" onClick={loadTitleModels} disabled={loadingTitleModels}>
             {loadingTitleModels ? "加载中" : "刷新模型"}
           </button>
-          {titleKeyMessage ? <span className="muted">{titleKeyMessage}</span> : null}
-          {titleKeyError ? <span className="error-text">{titleKeyError}</span> : null}
           {titleModelError ? <span className="error-text">{titleModelError}</span> : null}
+          {titleModels.length > 0 ? <span className="muted">云端可用模型 {titleModels.length} 个</span> : null}
         </div>
-      </section>
+      </section> : null}
 
-      <section className="panel half">
+      {mode === "rename" ? <section className="panel">
         <div className="panel-header">
           <div>
             <h2>图片重命名</h2>
@@ -706,14 +584,14 @@ export function MaterialsPage({ settings, onChanged, onJobStarted, onNavigate }:
         </div>
         {renameMessage && <p className="muted">{renameMessage}</p>}
         {renameError && <p className="error-text">{renameError}</p>}
-      </section>
+      </section> : null}
 
-      <section className="panel half">
+      {mode !== "rename" ? <section className="panel">
         <div className="panel-header">
           <h2>预检查结果</h2>
         </div>
-        <PreflightPanel issues={issues} onAction={() => onNavigate("settings")} />
-      </section>
+        <PreflightPanel issues={issues} />
+      </section> : null}
     </div>
   );
 }

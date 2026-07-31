@@ -5,5 +5,8 @@ target/
 .DS_Store
 *.log
 *.local
+.env
+server/.env
+server/reports/
 src-tauri/target/
 fixtures/output/

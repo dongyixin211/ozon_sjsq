@@ -1,0 +1,16 @@
+[Unit]
+Description=Ozon SJSQ Cloud Backend
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=ozoncloud
+WorkingDirectory=/opt/ozon-sjsq-cloud/server
+Environment=NODE_ENV=production
+Environment=MOCKUP_TEMPLATE_ROOT=/opt/ozon-sjsq-cloud/mockup-templates
+ExecStart=/usr/bin/node dist/src/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

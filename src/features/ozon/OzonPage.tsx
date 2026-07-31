@@ -1,33 +1,36 @@
-import { useEffect, useState } from "react";
-import type { AppSettings, CategoryOption, FollowAutomationRequest, OrderPostingRow, OzonProductRow, PreflightIssue, ProductAnalyticsRow, Shop, TemplateSummary, WarehouseOption } from "@shared/types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { AppSettings, CategoryOption, FollowAutomationRequest, JobSummary, ListingMaintenanceActionConfig, ListingMaintenanceRequest, OrderPostingRow, OzonProductRow, PreflightIssue, ProductAnalyticsRow, Shop, ShopDraft, TemplateSummary, WarehouseOption } from "@shared/types";
 import { api } from "../../lib/api";
 import { PathInput } from "../../lib/PathInput";
 import { LongOutput } from "../../lib/LongOutput";
 import { hasBlockingIssues, PreflightPanel } from "../../lib/PreflightPanel";
 import { buildActionProductPayload, extractNextLastId } from "./actionUtils";
 import { selectInventoryProducts } from "./inventoryUtils";
-import { hasBaiduBdussCookie, parseOrderNumbers } from "./orderUtils";
+import { hasBaiduBdussCookie, parseOrderNumbers, selectedPostingNumbersInRowOrder } from "./orderUtils";
 
 interface Props {
   shops: Shop[];
+  jobs?: JobSummary[];
   settings: AppSettings;
+  homeRequest?: number;
   onChanged: () => void;
-  onNavigate: (page: "settings" | "jobs") => void;
+  onNavigate: (page: "ozon" | "jobs") => void;
 }
 
-type TabKey = "overview" | "upload" | "update" | "orders" | "follow" | "inventory" | "analytics" | "api";
+type TabKey = "upload" | "update" | "orders" | "follow" | "inventory" | "analytics" | "api";
 type InventoryMode = "products" | "actions";
 type CategoryUpdateMode = "stock" | "price" | "both";
+type OperationFeedback = { tone: "success" | "error" | "running"; message: string };
 const PRODUCT_TEMPLATE_KIND = "product_import";
+const LISTING_MAINTENANCE_INTERVAL_MINUTES = 30;
 const TASK_TABS: Array<{ key: TabKey; label: string; description: string; primaryAction: string }> = [
-  { key: "overview", label: "任务总览", description: "从业务目标进入对应工具，适合日常操作开始页。", primaryAction: "查看路径" },
-  { key: "upload", label: "发布新品", description: "用 Excel、图片目录和商品模板创建 Ozon 上架任务。", primaryAction: "去发布" },
+  { key: "upload", label: "上架商品", description: "用 Excel、图片目录和商品模板创建 Ozon 上架任务。", primaryAction: "去上架" },
   { key: "update", label: "更新商品", description: "按货号更新已上架商品的标题、图片、视频和富内容。", primaryAction: "去更新" },
   { key: "orders", label: "下载订单文件", description: "按订单或货件编号下载标签、条码、拣货单和货号素材。", primaryAction: "去下载" },
   { key: "follow", label: "跟卖同步", description: "把主店商品补齐到跟卖店铺，并按 3 倍售价上架。", primaryAction: "去同步" },
   { key: "inventory", label: "库存价格活动", description: "查询商品后批量补库存、改价、生成条码或申报活动。", primaryAction: "去运维" },
   { key: "analytics", label: "浏览量与合并", description: "查看商品浏览量，并将同类目商品每 20 个合并为一张商品卡。", primaryAction: "去分析" },
-  { key: "api", label: "接口诊断", description: "检查 Ozon 连接、仓库返回和接口原始结果。", primaryAction: "去诊断" },
+  { key: "api", label: "接口诊断", description: "检查 Ozon 连接和接口原始结果。", primaryAction: "去诊断" },
 ];
 
 interface ActionRow {
@@ -61,6 +64,7 @@ interface CacheEntry<T> {
 }
 
 interface OrderDocumentsDraft {
+  shopId?: string;
   orderNumbersText?: string;
   orderOutputRoot?: string;
   ozonSellerHarPath?: string;
@@ -68,9 +72,14 @@ interface OrderDocumentsDraft {
   baiduSearchDir?: string;
   baiduRecursive?: boolean;
   downloadMaterials?: boolean;
+  orderDateFrom?: string;
+  orderDateTo?: string;
+  orderStatus?: string;
+  orderLimit?: number;
 }
 
 interface ListedUpdateDraft {
+  shopId?: string;
   tab?: TabKey;
   portraitRoot?: string;
   excelPath?: string;
@@ -84,6 +93,30 @@ interface ListedUpdateDraft {
   selectedTemplateId?: string;
   templateName?: string;
   templateOfferId?: string;
+  selectedWarehouseId?: number | "";
+  inventoryMode?: InventoryMode;
+  selectedCategoryId?: number | "";
+  categoryVideoShopIds?: string[];
+  categoryKeyword?: string;
+  categoryLimit?: number;
+  newPrice?: string;
+  newOldPrice?: string;
+  currencyCode?: string;
+  maintenanceActionCategoryId?: number | "";
+  maintenanceActionId?: number | "";
+  maintenanceActionPrice?: string;
+  maintenanceActionStock?: number;
+  analyticsDateFrom?: string;
+  analyticsDateTo?: string;
+  analyticsLimit?: number;
+  minimumCardViews?: number;
+}
+
+interface ListedCategoryUpdateTarget {
+  categoryId: number;
+  typeId?: number;
+  categoryName?: string;
+  cachedProducts?: Array<Pick<OzonProductRow, "offerId" | "name">>;
 }
 
 interface FollowAutomationDraft {
@@ -95,12 +128,16 @@ interface FollowAutomationDraft {
   maxFollowItems?: number;
   priceMultiplier?: number;
   stockValue?: number;
+  selectedWarehouseId?: number | "";
   selectedActionId?: number | "";
   actionPrice?: string;
   actionStock?: number;
+  inventoryMode?: InventoryMode;
+  actionProductLimit?: number;
 }
 
 const QUERY_CACHE_PREFIX = "ozon-sjsq:query-cache:v1";
+const QUERY_CACHE_MAX_BYTES = 4 * 1024 * 1024;
 const ORDER_DOCUMENTS_DRAFT_KEY = "ozon-sjsq:order-documents-draft:v1";
 const LISTED_UPDATE_DRAFT_KEY = "ozon-sjsq:listed-update-draft:v1";
 const FOLLOW_AUTOMATION_DRAFT_KEY = "ozon-sjsq:follow-automation-draft:v1";
@@ -122,10 +159,63 @@ function readQueryCache<T>(shopId: string, name: string): CacheEntry<T> | undefi
 
 function writeQueryCache<T>(shopId: string, name: string, data: T) {
   if (!shopId || typeof window === "undefined") return;
-  window.localStorage.setItem(queryCacheKey(shopId, name), JSON.stringify({
+  const key = queryCacheKey(shopId, name);
+  const payload = JSON.stringify({
     savedAt: new Date().toISOString(),
     data,
-  }));
+  });
+  if (storagePayloadSize(payload) > QUERY_CACHE_MAX_BYTES) {
+    removeStorageItem(key);
+    return;
+  }
+  try {
+    window.localStorage.setItem(key, payload);
+    return;
+  } catch (error) {
+    if (!isStorageQuotaError(error)) return;
+  }
+  clearQueryCaches();
+  try {
+    window.localStorage.setItem(key, payload);
+  } catch {
+    removeStorageItem(key);
+    // 查询缓存只是页面加速项，写不进去时不能影响当前业务操作。
+  }
+}
+
+function isStorageQuotaError(error: unknown) {
+  return error instanceof DOMException
+    && (error.name === "QuotaExceededError"
+      || error.name === "NS_ERROR_DOM_QUOTA_REACHED"
+      || error.code === 22
+      || error.code === 1014);
+}
+
+function clearQueryCaches() {
+  for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+    const key = window.localStorage.key(index);
+    if (key?.startsWith(QUERY_CACHE_PREFIX)) {
+      window.localStorage.removeItem(key);
+    }
+  }
+}
+
+function removeStorageItem(key: string) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
+function storagePayloadSize(payload: string) {
+  return typeof TextEncoder === "undefined"
+    ? payload.length
+    : new TextEncoder().encode(payload).length;
+}
+
+function normalizeShopIds(values: string[]) {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
 function readOrderDocumentsDraft(): OrderDocumentsDraft {
@@ -193,24 +283,51 @@ function dateInputValue(daysAgo: number) {
   return date.toISOString().slice(0, 10);
 }
 
-export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
+function restoreShopId(savedId: string | undefined, shops: Shop[]) {
+  if (savedId && shops.some((shop) => shop.id === savedId)) {
+    return savedId;
+  }
+  return shops.find((shop) => shop.enabled)?.id ?? shops[0]?.id ?? "";
+}
+
+function isListingMaintenanceEnabledForShop(shop: Shop) {
+  return (shop.maintenanceStockEnabled ?? true)
+    || (shop.maintenanceBarcodeEnabled ?? true)
+    || ((shop.maintenanceActionEnabled ?? true) && (shop.maintenanceActionConfigs ?? []).length > 0);
+}
+
+function restorePositiveInt(value: unknown, fallback: number) {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function restoreNonNegativeInt(value: unknown, fallback: number) {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
+export function OzonPage({ shops, jobs = [], settings, homeRequest = 0, onChanged, onNavigate }: Props) {
   const savedOrderDraft = readOrderDocumentsDraft();
   const savedUpdateDraft = readListedUpdateDraft();
   const savedFollowDraft = readFollowAutomationDraft();
-  const [tab, setTab] = useState<TabKey>(savedUpdateDraft.tab ?? "overview");
-  const [shopId, setShopId] = useState<string>(shops.find((shop) => shop.enabled)?.id ?? shops[0]?.id ?? "");
+  const [tab, setTab] = useState<TabKey>(normalizeSavedTab(savedUpdateDraft.tab));
+  const [shopId, setShopId] = useState<string>(() => restoreShopId(savedUpdateDraft.shopId ?? savedOrderDraft.shopId, shops));
   const [shopCenterOpen, setShopCenterOpen] = useState(false);
+  const [shopDialogOpen, setShopDialogOpen] = useState(false);
+  const [editingShop, setEditingShop] = useState<Shop | undefined>(undefined);
+  const [shopMessage, setShopMessage] = useState("");
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [warehousesLoading, setWarehousesLoading] = useState(false);
   const [warehouseError, setWarehouseError] = useState("");
   const [result, setResult] = useState("");
   const [friendlyMessage, setFriendlyMessage] = useState("");
   const [friendlyTone, setFriendlyTone] = useState<"info" | "error">("info");
+  const [inventoryFeedback, setInventoryFeedback] = useState<OperationFeedback | null>(null);
   const [issues, setIssues] = useState<PreflightIssue[]>([]);
   const [checking, setChecking] = useState(false);
   const [portraitRoot, setPortraitRoot] = useState(savedUpdateDraft.portraitRoot ?? settings.defaultOutputRoot);
   const [excelPath, setExcelPath] = useState(savedUpdateDraft.excelPath ?? settings.uploadExcelPath);
-  const [maxItems, setMaxItems] = useState(savedUpdateDraft.maxItems ?? (settings.uploadMaxItems || 100));
+  const [maxItems, setMaxItems] = useState(restorePositiveInt(savedUpdateDraft.maxItems, settings.uploadMaxItems || 100));
   const [templateVideoLinks, setTemplateVideoLinks] = useState(savedUpdateDraft.templateVideoLinks ?? "");
   const [updateTitle, setUpdateTitle] = useState(savedUpdateDraft.updateTitle ?? true);
   const [updateDescription, setUpdateDescription] = useState(savedUpdateDraft.updateDescription ?? true);
@@ -218,33 +335,51 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
   const [updateVideo, setUpdateVideo] = useState(savedUpdateDraft.updateVideo ?? false);
   const [updateRichJson, setUpdateRichJson] = useState(savedUpdateDraft.updateRichJson ?? false);
   const [orderNumbersText, setOrderNumbersText] = useState(savedOrderDraft.orderNumbersText ?? "");
+  const [orderShippingLabelText, setOrderShippingLabelText] = useState("");
   const [orderOutputRoot, setOrderOutputRoot] = useState(savedOrderDraft.orderOutputRoot ?? settings.defaultOutputRoot);
   const [ozonSellerHarPath, setOzonSellerHarPath] = useState(savedOrderDraft.ozonSellerHarPath ?? "");
   const [ozonSellerCookiePath, setOzonSellerCookiePath] = useState(savedOrderDraft.ozonSellerCookiePath ?? "");
   const [baiduCookie, setBaiduCookie] = useState(settings.baiduCookie);
   const [baiduSearchDir, setBaiduSearchDir] = useState(savedOrderDraft.baiduSearchDir ?? "/");
   const [baiduRecursive, setBaiduRecursive] = useState(savedOrderDraft.baiduRecursive ?? true);
-  const [downloadMaterials, setDownloadMaterials] = useState(savedOrderDraft.downloadMaterials ?? false);
-  const [orderDateFrom, setOrderDateFrom] = useState(dateInputValue(7));
-  const [orderDateTo, setOrderDateTo] = useState(dateInputValue(0));
-  const [orderStatus, setOrderStatus] = useState("");
-  const [orderLimit, setOrderLimit] = useState(100);
+  const [downloadMaterials, setDownloadMaterials] = useState(savedOrderDraft.downloadMaterials ?? true);
+  const [orderDateFrom, setOrderDateFrom] = useState(savedOrderDraft.orderDateFrom || dateInputValue(7));
+  const [orderDateTo, setOrderDateTo] = useState(savedOrderDraft.orderDateTo || dateInputValue(0));
+  const [orderStatus, setOrderStatus] = useState(savedOrderDraft.orderStatus || "");
+  const [orderLimit, setOrderLimit] = useState(restorePositiveInt(savedOrderDraft.orderLimit, 100));
   const [orderRows, setOrderRows] = useState<OrderPostingRow[]>([]);
   const [selectedPostingNumbers, setSelectedPostingNumbers] = useState<string[]>([]);
+  const latestOrderPostingsRequestRef = useRef(0);
   const [products, setProducts] = useState<OzonProductRow[]>([]);
-  const [inventoryMode, setInventoryMode] = useState<InventoryMode>("products");
+  const [inventoryMode, setInventoryMode] = useState<InventoryMode>(savedFollowDraft.inventoryMode ?? savedUpdateDraft.inventoryMode ?? "products");
   const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
   const [productPage, setProductPage] = useState(1);
   const [productPageSize, setProductPageSize] = useState(10);
   const [stockValue, setStockValue] = useState(savedFollowDraft.stockValue ?? 10);
-  const [selectedWarehouseId, setSelectedWarehouseId] = useState<number | "">("");
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<number | "">(savedFollowDraft.selectedWarehouseId ?? savedUpdateDraft.selectedWarehouseId ?? "");
+  const [maintenanceStock, setMaintenanceStock] = useState(50);
+  const [maintenanceWarehouseId, setMaintenanceWarehouseId] = useState<number | "">("");
+  const [maintenanceAutoStock, setMaintenanceAutoStock] = useState(true);
+  const [maintenanceAutoBarcode, setMaintenanceAutoBarcode] = useState(true);
+  const [maintenanceAutoAction, setMaintenanceAutoAction] = useState(true);
+  const [maintenanceActionConfigs, setMaintenanceActionConfigs] = useState<ListingMaintenanceActionConfig[]>([]);
+  const [maintenanceIntervalMinutes, setMaintenanceIntervalMinutes] = useState(LISTING_MAINTENANCE_INTERVAL_MINUTES);
+  const [maintenanceActionCategoryId, setMaintenanceActionCategoryId] = useState<number | "">(savedUpdateDraft.maintenanceActionCategoryId ?? "");
+  const [maintenanceActionId, setMaintenanceActionId] = useState<number | "">(savedUpdateDraft.maintenanceActionId ?? "");
+  const [maintenanceActionPrice, setMaintenanceActionPrice] = useState(savedUpdateDraft.maintenanceActionPrice ?? "");
+  const [maintenanceActionStock, setMaintenanceActionStock] = useState(savedUpdateDraft.maintenanceActionStock ?? 50);
+  const [maintenanceCategorySearch, setMaintenanceCategorySearch] = useState("");
+  const autoLoadedShopDataRef = useRef(new Set<string>());
   const [categories, setCategories] = useState<CategoryOption[]>([]);
-  const [selectedCategoryId, setSelectedCategoryId] = useState<number | "">("");
-  const [categoryKeyword, setCategoryKeyword] = useState("");
-  const [categoryLimit, setCategoryLimit] = useState(100);
-  const [newPrice, setNewPrice] = useState("");
-  const [newOldPrice, setNewOldPrice] = useState("");
-  const [currencyCode, setCurrencyCode] = useState("");
+  const [selectedCategoryId, setSelectedCategoryId] = useState<number | "">(savedUpdateDraft.selectedCategoryId ?? "");
+  const [categoryVideoShopIds, setCategoryVideoShopIds] = useState<string[]>(
+    normalizeShopIds(savedUpdateDraft.categoryVideoShopIds ?? []).filter((id) => shops.some((shop) => shop.id === id)),
+  );
+  const [categoryKeyword, setCategoryKeyword] = useState(savedUpdateDraft.categoryKeyword ?? "");
+  const [categoryLimit, setCategoryLimit] = useState(restorePositiveInt(savedUpdateDraft.categoryLimit, 100));
+  const [newPrice, setNewPrice] = useState(savedUpdateDraft.newPrice ?? "");
+  const [newOldPrice, setNewOldPrice] = useState(savedUpdateDraft.newOldPrice ?? "");
+  const [currencyCode, setCurrencyCode] = useState(savedUpdateDraft.currencyCode ?? "");
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState(savedUpdateDraft.selectedTemplateId ?? "");
   const [templateName, setTemplateName] = useState(savedUpdateDraft.templateName ?? "");
@@ -252,11 +387,6 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
   const [templateJson, setTemplateJson] = useState("");
   const [templateProduct, setTemplateProduct] = useState<unknown | undefined>(undefined);
   const [templateStatus, setTemplateStatus] = useState("未选择商品模板");
-  const [previewSku, setPreviewSku] = useState("SKU-PREVIEW");
-  const [previewTitle, setPreviewTitle] = useState("预览商品标题");
-  const [previewDescription, setPreviewDescription] = useState("预览商品简介");
-  const [previewImageUrls, setPreviewImageUrls] = useState("https://example.com/image-1.jpg");
-  const [previewPayload, setPreviewPayload] = useState("");
   const [actions, setActions] = useState<ActionRow[]>([]);
   const [selectedActionId, setSelectedActionId] = useState<number | "">(savedFollowDraft.selectedActionId ?? "");
   const [pendingDeleteAllActionId, setPendingDeleteAllActionId] = useState<number | "">("");
@@ -264,7 +394,7 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
   const [actionCandidates, setActionCandidates] = useState<ActionProductRow[]>([]);
   const [selectedActionProductIds, setSelectedActionProductIds] = useState<number[]>([]);
   const [selectedActionCandidateIds, setSelectedActionCandidateIds] = useState<number[]>([]);
-  const [actionProductLimit, setActionProductLimit] = useState(100);
+  const [actionProductLimit, setActionProductLimit] = useState(restorePositiveInt(savedFollowDraft.actionProductLimit, 100));
   const [actionProductLastId, setActionProductLastId] = useState("");
   const [nextActionProductLastId, setNextActionProductLastId] = useState("");
   const [actionCandidateLastId, setActionCandidateLastId] = useState("");
@@ -279,15 +409,16 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
   const [followIntervalMinutes, setFollowIntervalMinutes] = useState(savedFollowDraft.intervalMinutes ?? 60);
   const [followMaxItems, setFollowMaxItems] = useState(savedFollowDraft.maxFollowItems ?? settings.uploadMaxItems);
   const [followPriceMultiplier, setFollowPriceMultiplier] = useState(savedFollowDraft.priceMultiplier ?? 3);
-  const [analyticsDateFrom, setAnalyticsDateFrom] = useState(dateInputValue(29));
-  const [analyticsDateTo, setAnalyticsDateTo] = useState(dateInputValue(0));
-  const [analyticsLimit, setAnalyticsLimit] = useState(1000);
-  const [minimumCardViews, setMinimumCardViews] = useState(1);
+  const [analyticsDateFrom, setAnalyticsDateFrom] = useState(savedUpdateDraft.analyticsDateFrom ?? dateInputValue(29));
+  const [analyticsDateTo, setAnalyticsDateTo] = useState(savedUpdateDraft.analyticsDateTo ?? dateInputValue(0));
+  const [analyticsLimit, setAnalyticsLimit] = useState(restorePositiveInt(savedUpdateDraft.analyticsLimit, 1000));
+  const [minimumCardViews, setMinimumCardViews] = useState(restoreNonNegativeInt(savedUpdateDraft.minimumCardViews, 1));
   const [analyticsRows, setAnalyticsRows] = useState<ProductAnalyticsRow[]>([]);
   const [selectedAnalyticsProductIds, setSelectedAnalyticsProductIds] = useState<number[]>([]);
   const [mergeConfirmPending, setMergeConfirmPending] = useState(false);
 
   const uploadRequest = () => ({
+    cloudApiBaseUrl: settings.cloudApiBaseUrl,
     shopIds: shopId ? [shopId] : [],
     portraitRoot,
     excelPath,
@@ -320,7 +451,36 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     actionStock,
   });
 
-  const updateRequest = () => ({
+  const listingMaintenanceRequest = (): ListingMaintenanceRequest => {
+    const actionReady = maintenanceAutoAction && maintenanceActionConfigs.length > 0;
+    return {
+      shopId,
+    intervalMinutes: LISTING_MAINTENANCE_INTERVAL_MINUTES,
+      autoUpdateStock: maintenanceAutoStock,
+      autoGenerateBarcode: maintenanceAutoBarcode,
+      autoAddToAction: actionReady,
+      warehouseId: typeof maintenanceWarehouseId === "number" ? maintenanceWarehouseId : undefined,
+      stock: maintenanceStock,
+      actionConfigs: actionReady ? maintenanceActionConfigs : [],
+    };
+  };
+
+  const listingMaintenanceRequestForShop = (shop: Shop): ListingMaintenanceRequest => {
+    const actionConfigs = shop.maintenanceActionConfigs ?? [];
+    const actionReady = (shop.maintenanceActionEnabled ?? true) && actionConfigs.length > 0;
+    return {
+      shopId: shop.id,
+      intervalMinutes: LISTING_MAINTENANCE_INTERVAL_MINUTES,
+      autoUpdateStock: shop.maintenanceStockEnabled ?? true,
+      autoGenerateBarcode: shop.maintenanceBarcodeEnabled ?? true,
+      autoAddToAction: actionReady,
+      warehouseId: shop.maintenanceWarehouseId,
+      stock: shop.maintenanceStock ?? 50,
+      actionConfigs: actionReady ? actionConfigs : [],
+    };
+  };
+
+  const updateRequest = (categoryUpdate?: ListedCategoryUpdateTarget) => ({
     shopId,
     portraitRoot,
     excelPath,
@@ -332,29 +492,83 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     updateRichJson,
     templateProduct,
     templateVideoLinks: templateVideoLinks ? templateVideoLinks.split("\n").map((item) => item.trim()).filter(Boolean) : [],
+    categoryUpdate,
   });
 
-  const orderDocumentsRequest = (orderNumbers = parseOrderNumbers(orderNumbersText)) => ({
-    shopId,
-    orderNumbers,
-    outputRoot: orderOutputRoot,
-    ozonCompanyId: currentShop?.clientId,
-    ozonSellerHarPath,
-    ozonSellerCookiePath,
-    baiduCookie,
-    baiduSearchDir,
-    baiduRecursive,
-    downloadMaterials,
-  });
+  const orderDocumentsRequest = (orderNumbers = parseOrderNumbers(orderNumbersText)) => {
+    const urls = orderShippingLabelText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    return {
+      shopId,
+      orderNumbers,
+      outputRoot: orderOutputRoot,
+      ozonCompanyId: currentShop?.clientId,
+      ozonSellerHarPath,
+      ozonSellerCookiePath,
+      baiduCookie,
+      baiduSearchDir,
+      baiduRecursive,
+      downloadMaterials,
+      shippingLabels: orderNumbers.map((orderNumber, index) => ({ orderNumber, url: urls[index] ?? "" })),
+    };
+  };
 
   const currentShop = shops.find((shop) => shop.id === shopId);
+  const runningListingMaintenanceJobs = useMemo(
+    () => jobs.filter((job) => (
+      job.kind === "listing_maintenance"
+      && (job.status === "running" || job.status === "queued")
+      && Boolean(job.inputPath)
+    )),
+    [jobs],
+  );
+  const runningListingMaintenanceJob = useMemo(
+    () => runningListingMaintenanceJobs.find((job) => job.inputPath === shopId),
+    [runningListingMaintenanceJobs, shopId],
+  );
+  const maintenanceEnabled = maintenanceAutoStock || maintenanceAutoBarcode || (maintenanceAutoAction && maintenanceActionConfigs.length > 0);
+  const enabledShops = useMemo(() => shops.filter((shop) => shop.enabled), [shops]);
   const followerShops = shops.filter((shop) => (shop.shopRole ?? "main") === "follower" && shop.followsShopId === shopId);
   const currentMainShop = currentShop?.followsShopId ? shops.find((shop) => shop.id === currentShop.followsShopId) : undefined;
   const analyticsMaxDate = dateInputValue(0);
   const visibleAnalyticsRows = analyticsRows.filter((row) => row.cardViews >= minimumCardViews);
 
   useEffect(() => {
+    if (shops.length === 0) return;
+    if (!shopId || !shops.some((shop) => shop.id === shopId)) {
+      setShopId(restoreShopId(savedUpdateDraft.shopId ?? savedOrderDraft.shopId, shops));
+    }
+  }, [shopId, shops, savedUpdateDraft.shopId, savedOrderDraft.shopId]);
+
+  useEffect(() => {
+    const validShopIds = new Set(shops.map((shop) => shop.id));
+    setCategoryVideoShopIds((current) => current.filter((id) => validShopIds.has(id)));
+  }, [shops]);
+
+  useEffect(() => {
+    setMaintenanceWarehouseId(currentShop?.maintenanceWarehouseId ?? "");
+    setMaintenanceStock(currentShop?.maintenanceStock ?? 50);
+    setMaintenanceAutoStock(currentShop?.maintenanceStockEnabled ?? true);
+    setMaintenanceAutoBarcode(currentShop?.maintenanceBarcodeEnabled ?? true);
+    const actionConfigs = currentShop?.maintenanceActionConfigs ?? [];
+    setMaintenanceActionConfigs(actionConfigs);
+    setMaintenanceAutoAction((currentShop?.maintenanceActionEnabled ?? true) || actionConfigs.length > 0);
+    setMaintenanceIntervalMinutes(LISTING_MAINTENANCE_INTERVAL_MINUTES);
+  }, [currentShop?.id, currentShop?.updatedAt]);
+
+  useEffect(() => {
+    if (homeRequest === 0) return;
+    setShopCenterOpen(false);
+    setShopDialogOpen(false);
+    setEditingShop(undefined);
+    setTab("upload");
+    window.requestAnimationFrame(() => {
+      document.querySelector(".main")?.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  }, [homeRequest]);
+
+  useEffect(() => {
     writeOrderDocumentsDraft({
+      shopId,
       orderNumbersText,
       orderOutputRoot,
       ozonSellerHarPath,
@@ -362,8 +576,13 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
       baiduSearchDir,
       baiduRecursive,
       downloadMaterials,
+      orderDateFrom,
+      orderDateTo,
+      orderStatus,
+      orderLimit,
     });
   }, [
+    shopId,
     orderNumbersText,
     orderOutputRoot,
     ozonSellerHarPath,
@@ -371,10 +590,15 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     baiduSearchDir,
     baiduRecursive,
     downloadMaterials,
+    orderDateFrom,
+    orderDateTo,
+    orderStatus,
+    orderLimit,
   ]);
 
   useEffect(() => {
     writeListedUpdateDraft({
+      shopId,
       tab,
       portraitRoot,
       excelPath,
@@ -388,8 +612,26 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
       selectedTemplateId,
       templateName,
       templateOfferId,
+      selectedWarehouseId,
+      inventoryMode,
+      selectedCategoryId,
+      categoryVideoShopIds,
+      categoryKeyword,
+      categoryLimit,
+      newPrice,
+      newOldPrice,
+      currencyCode,
+      maintenanceActionCategoryId,
+      maintenanceActionId,
+      maintenanceActionPrice,
+      maintenanceActionStock,
+      analyticsDateFrom,
+      analyticsDateTo,
+      analyticsLimit,
+      minimumCardViews,
     });
   }, [
+    shopId,
     tab,
     portraitRoot,
     excelPath,
@@ -403,6 +645,23 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     selectedTemplateId,
     templateName,
     templateOfferId,
+    selectedWarehouseId,
+    inventoryMode,
+    selectedCategoryId,
+    categoryVideoShopIds,
+    categoryKeyword,
+    categoryLimit,
+    newPrice,
+    newOldPrice,
+    currencyCode,
+    maintenanceActionCategoryId,
+    maintenanceActionId,
+    maintenanceActionPrice,
+    maintenanceActionStock,
+    analyticsDateFrom,
+    analyticsDateTo,
+    analyticsLimit,
+    minimumCardViews,
   ]);
 
   useEffect(() => {
@@ -415,9 +674,12 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
       maxFollowItems: followMaxItems,
       priceMultiplier: followPriceMultiplier,
       stockValue,
+      selectedWarehouseId,
       selectedActionId,
       actionPrice,
       actionStock,
+      inventoryMode,
+      actionProductLimit,
     });
   }, [
     followAutoSync,
@@ -428,15 +690,18 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     followMaxItems,
     followPriceMultiplier,
     stockValue,
+    selectedWarehouseId,
     selectedActionId,
     actionPrice,
     actionStock,
+    inventoryMode,
+    actionProductLimit,
   ]);
 
   const loadWarehouses = async (id: string) => {
     if (!id) {
       setWarehouses([]);
-      setWarehouseError("请先在设置页保存店铺，并选择店铺后获取仓库。");
+      setWarehouseError("请先在店铺管理里保存店铺，并选择店铺后获取仓库。");
       return;
     }
     setWarehousesLoading(true);
@@ -484,15 +749,43 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     writeQueryCache(shopId, "inventory-products", { source, rows });
   };
 
+  const categoryProductCacheName = (categoryId: number, typeId?: number) =>
+    `category-products:${categoryId}:${typeId ?? ""}`;
+
+  const readCachedCategoryProducts = (targetShopId: string, categoryId: number, typeId?: number) =>
+    readQueryCache<OzonProductRow[]>(targetShopId, categoryProductCacheName(categoryId, typeId))?.data ?? [];
+
+  const writeCachedCategoryProducts = (
+    targetShopId: string,
+    categoryId: number,
+    typeId: number | undefined,
+    rows: OzonProductRow[],
+  ) => {
+    writeQueryCache(targetShopId, categoryProductCacheName(categoryId, typeId), rows);
+  };
+
+  const cachedProductsForUpdate = (targetShopId: string, categoryId: number, typeId?: number) =>
+    readCachedCategoryProducts(targetShopId, categoryId, typeId)
+      .filter((row) => row.offerId.trim())
+      .map((row) => ({ offerId: row.offerId, name: row.name || row.offerId }));
+
   const applyCachedShopData = (id: string) => {
     const cachedWarehouses = readQueryCache<WarehouseOption[]>(id, "warehouses");
     setWarehouses(cachedWarehouses?.data ?? []);
-    setWarehouseError(cachedWarehouses ? "" : "暂无本地仓库缓存，点击刷新仓库后会查询 Ozon。");
+    setWarehouseError(cachedWarehouses ? "" : "暂无本地仓库缓存，点击查询仓库后会查询 Ozon。");
     setSelectedWarehouseId((current) => current || cachedWarehouses?.data[0]?.warehouseId || "");
 
     const cachedCategories = readQueryCache<CategoryOption[]>(id, "categories");
     setCategories(cachedCategories?.data ?? []);
-    setSelectedCategoryId("");
+    if (cachedCategories?.data.length) {
+      setResult(`已从本地缓存读取 ${cachedCategories.data.length} 个商品分类，需要更新时点击刷新类目。`);
+    }
+    setSelectedCategoryId((current) => {
+      if (!cachedCategories?.data.length) {
+        return current;
+      }
+      return current && cachedCategories.data.some((category) => category.id === current) ? current : "";
+    });
 
     const cachedProducts = readQueryCache<{ source: string; rows: OzonProductRow[] }>(id, "inventory-products");
     setProductRows(cachedProducts?.data.rows ?? []);
@@ -587,10 +880,100 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     });
   };
 
+  const useVideoOnlyUpdate = () => {
+    setUpdateTitle(false);
+    setUpdateDescription(false);
+    setUpdateImages(false);
+    setUpdateVideo(true);
+    setUpdateRichJson(false);
+    setIssues([]);
+    setFriendlyMessage("已切换为只更新视频：只需要选择店铺、Excel 货号表，并填写视频链接。");
+  };
+
+  const submitCategoryVideoUpdate = async () => {
+    setResult("");
+    setFriendlyMessage("");
+    setFriendlyTone("info");
+    setInventoryFeedback({ tone: "running", message: "正在提交全类目视频更新任务，请稍等..." });
+    try {
+      if (!shopId) throw new Error("请先选择店铺");
+      const selected = selectedCategory();
+      if (!selected) throw new Error("请先选择商品分类");
+      if (!selected.descriptionCategoryId) throw new Error("所选分类缺少 Ozon description_category_id");
+      const videoLinks = templateVideoLinks.split("\n").map((item) => item.trim()).filter(Boolean);
+      if (videoLinks.length === 0) throw new Error("请先在更新商品页或本页填写视频链接");
+      const targetShopIds = normalizeShopIds(categoryVideoShopIds.length > 0 ? categoryVideoShopIds : [shopId])
+        .filter((id) => shops.some((shop) => shop.id === id));
+      if (targetShopIds.length === 0) throw new Error("请至少选择一个要更新视频的店铺");
+      const results = [];
+      const errors = [];
+      for (const targetShopId of targetShopIds) {
+        const targetShop = shops.find((shop) => shop.id === targetShopId);
+        const cachedProducts = cachedProductsForUpdate(targetShopId, selected.descriptionCategoryId, selected.typeId);
+        try {
+          const job = await api.startListedUpdate({
+            shopId: targetShopId,
+            portraitRoot: "",
+            excelPath: "",
+            maxItems: undefined,
+            updateTitle: false,
+            updateDescription: false,
+            updateImages: false,
+            updateVideo: true,
+            updateRichJson: false,
+            templateProduct,
+            templateVideoLinks: videoLinks,
+            categoryUpdate: {
+              categoryId: selected.descriptionCategoryId,
+              typeId: selected.typeId,
+              categoryName: selected.name,
+              cachedProducts: cachedProducts.length > 0 ? cachedProducts : undefined,
+            },
+          });
+          results.push({
+            shopId: targetShopId,
+            shopName: targetShop?.name ?? targetShopId,
+            cachedProducts: cachedProducts.length,
+            job,
+          });
+        } catch (error) {
+          errors.push({
+            shopId: targetShopId,
+            shopName: targetShop?.name ?? targetShopId,
+            message: friendlyError(error),
+          });
+        }
+      }
+      if (results.length === 0) {
+        throw new Error(errors.map((item) => `${item.shopName}: ${item.message}`).join("；") || "全类目视频更新任务提交失败");
+      }
+      setResult(JSON.stringify({ jobs: results, errors }, null, 2));
+      const cacheText = results.some((item) => item.cachedProducts > 0)
+        ? "，已优先使用本地类目商品缓存"
+        : "，没有缓存的店铺会在后台查询 Ozon 类目商品";
+      const errorText = errors.length > 0 ? `；${errors.length} 个店铺提交失败，请查看输出详情` : "";
+      const message = `已提交 ${results.length} 个店铺的全类目视频更新任务：“${selected.name}”${cacheText}${errorText}。`;
+      setInventoryFeedback({ tone: "success", message });
+      setFriendlyMessage(message);
+      onChanged();
+      onNavigate("jobs");
+    } catch (error) {
+      const message = friendlyError(error);
+      setFriendlyTone("error");
+      setFriendlyMessage(message);
+      setInventoryFeedback({ tone: "error", message });
+      setResult(message);
+    }
+  };
+
   const submitOrderDocuments = async () => {
     await run(async () => {
       if (!shopId) throw new Error("请先选择店铺");
       if (parseOrderNumbers(orderNumbersText).length === 0) throw new Error("请至少输入一个订单/货件编号");
+      const orderNumbers = parseOrderNumbers(orderNumbersText);
+      const shippingLabelUrls = orderShippingLabelText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+      if (shippingLabelUrls.length !== orderNumbers.length) throw new Error(`物流贴单地址数量必须等于订单数量：订单 ${orderNumbers.length} 个，地址 ${shippingLabelUrls.length} 个`);
+      if (new Set(shippingLabelUrls).size !== shippingLabelUrls.length) throw new Error("同一个物流贴单地址不能重复使用");
       if (!orderOutputRoot.trim()) throw new Error("请选择输出目录");
       if (!ozonSellerHarPath.trim() && !ozonSellerCookiePath.trim() && !currentShop?.ozonSellerCookieStored) {
         throw new Error("请先保存当前店铺的 Ozon 后台 Cookie，或选择 HAR/粘贴 Cookie");
@@ -609,7 +992,12 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
   };
 
   const loadOrderPostings = async () => {
-    await run(async () => {
+    const requestId = latestOrderPostingsRequestRef.current + 1;
+    latestOrderPostingsRequestRef.current = requestId;
+    setResult("");
+    setFriendlyMessage("");
+    setFriendlyTone("info");
+    try {
       if (!shopId) throw new Error("请先选择店铺");
       if (!orderDateFrom || !orderDateTo) throw new Error("请选择订单日期");
       if (orderDateFrom > orderDateTo) throw new Error("订单开始日期不能晚于结束日期");
@@ -620,11 +1008,18 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
         status: orderStatus || undefined,
         limit: orderLimit,
       });
+      if (requestId !== latestOrderPostingsRequestRef.current) return;
       setOrderRows(rows);
       setSelectedPostingNumbers([]);
       setFriendlyMessage(`已获取 ${rows.length} 个订单/货件，可勾选后下载。`);
       setResult(`订单区间 ${orderDateFrom} 至 ${orderDateTo}，共 ${rows.length} 条。`);
-    });
+    } catch (error) {
+      if (requestId !== latestOrderPostingsRequestRef.current) return;
+      const message = friendlyError(error);
+      setFriendlyTone("error");
+      setFriendlyMessage(message);
+      setResult(message);
+    }
   };
 
   const applySelectedOrdersToInput = () => {
@@ -635,7 +1030,11 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
   const submitSelectedOrderDocuments = async () => {
     await run(async () => {
       if (!shopId) throw new Error("请先选择店铺");
-      if (selectedPostingNumbers.length === 0) throw new Error("请先勾选要下载的订单/货件");
+      const selectedOrderNumbers = selectedPostingNumbersInRowOrder(orderRows, selectedPostingNumbers);
+      if (selectedOrderNumbers.length === 0) throw new Error("请先勾选要下载的订单/货件");
+      const shippingLabelUrls = orderShippingLabelText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+      if (shippingLabelUrls.length !== selectedOrderNumbers.length) throw new Error(`物流贴单地址数量必须等于订单数量：订单 ${selectedOrderNumbers.length} 个，地址 ${shippingLabelUrls.length} 个`);
+      if (new Set(shippingLabelUrls).size !== shippingLabelUrls.length) throw new Error("同一个物流贴单地址不能重复使用");
       if (!orderOutputRoot.trim()) throw new Error("请选择输出目录");
       if (!ozonSellerHarPath.trim() && !ozonSellerCookiePath.trim() && !currentShop?.ozonSellerCookieStored) {
         throw new Error("请先保存当前店铺的 Ozon 后台 Cookie，或选择 HAR/粘贴 Cookie");
@@ -646,8 +1045,8 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
       if (downloadMaterials && baiduCookie.trim() !== settings.baiduCookie) {
         await saveBaiduCookie();
       }
-      const job = await api.startOrderDocuments(orderDocumentsRequest(selectedPostingNumbers));
-      setOrderNumbersText(selectedPostingNumbers.join("\n"));
+      const job = await api.startOrderDocuments(orderDocumentsRequest(selectedOrderNumbers));
+      setOrderNumbersText(selectedOrderNumbers.join("\n"));
       setResult(JSON.stringify(job, null, 2));
       setFriendlyMessage("勾选订单文件下载任务已提交。");
       onChanged();
@@ -673,6 +1072,101 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
       setFriendlyMessage("跟卖自动化已启动，会按设置间隔循环执行；需要停止时到任务记录取消。");
       onChanged();
       onNavigate("jobs");
+    });
+  };
+
+  const saveListingMaintenanceConfig = async () => {
+    await run(async () => {
+      if (!currentShop) throw new Error("请先选择店铺");
+      const draft = {
+        ...shopToDraft(currentShop),
+        maintenanceWarehouseId: typeof maintenanceWarehouseId === "number" ? maintenanceWarehouseId : undefined,
+        maintenanceStock,
+        maintenanceStockEnabled: maintenanceAutoStock,
+        maintenanceBarcodeEnabled: maintenanceAutoBarcode,
+        maintenanceActionEnabled: maintenanceAutoAction,
+        maintenanceIntervalMinutes: LISTING_MAINTENANCE_INTERVAL_MINUTES,
+        maintenanceActionConfigs,
+      };
+      const saved = await api.saveShop(draft);
+      setShopMessage(`${saved.name} 自动运维配置已保存。`);
+      setFriendlyMessage("店铺自动运维配置已保存。");
+      await onChanged();
+    });
+  };
+
+  const startListingMaintenance = async () => {
+    await run(async () => {
+      if (!shopId) throw new Error("请先选择店铺");
+      const request = listingMaintenanceRequest();
+      if (!(request.autoUpdateStock || request.autoGenerateBarcode || request.autoAddToAction)) {
+        throw new Error("请至少选择库存、条码或活动中的一个自动运维任务");
+      }
+      const job = await api.startListingMaintenance(request);
+      setResult(JSON.stringify(job, null, 2));
+      setFriendlyMessage("店铺定时运维已启动：每 30 分钟执行一次运维任务。");
+      await onChanged();
+    });
+  };
+
+  const startAllListingMaintenance = async () => {
+    await run(async () => {
+      const targets = enabledShops.filter(isListingMaintenanceEnabledForShop);
+      if (targets.length === 0) {
+        throw new Error("没有可执行定时运维的已启用店铺，请先启用店铺或保存运维配置。");
+      }
+      const started: Array<{ shopId: string; shopName: string; jobId: string }> = [];
+      const failed: Array<{ shopId: string; shopName: string; message: string }> = [];
+      for (const target of targets) {
+        try {
+          const job = await api.startListingMaintenance(listingMaintenanceRequestForShop(target));
+          started.push({ shopId: target.id, shopName: target.name, jobId: job.id });
+        } catch (error) {
+          failed.push({ shopId: target.id, shopName: target.name, message: friendlyError(error) });
+        }
+      }
+      if (started.length === 0) {
+        throw new Error(`全部店铺定时运维启动失败：${failed.map((item) => `${item.shopName} ${item.message}`).join("；")}`);
+      }
+      setResult(JSON.stringify({ started, failed }, null, 2));
+      if (failed.length > 0) setFriendlyTone("error");
+      setFriendlyMessage(`已为 ${started.length} 个店铺启动定时运维${failed.length > 0 ? `，${failed.length} 个店铺启动失败，请查看结果。` : "。"}`);
+      await onChanged();
+    });
+  };
+
+  const pauseListingMaintenance = async () => {
+    await run(async () => {
+      if (!shopId) throw new Error("请先选择店铺");
+      if (!runningListingMaintenanceJob) throw new Error("当前店铺没有正在运行的定时运维任务");
+      const cancelled = await api.cancelJob(runningListingMaintenanceJob.id);
+      if (!cancelled) throw new Error("任务已结束，无法继续暂停");
+      setFriendlyMessage("店铺定时运维已暂停。");
+      await onChanged();
+    });
+  };
+
+  const pauseAllListingMaintenance = async () => {
+    await run(async () => {
+      if (runningListingMaintenanceJobs.length === 0) throw new Error("没有正在运行的定时运维任务");
+      const stopped: string[] = [];
+      const failed: Array<{ jobId: string; shopId?: string; message: string }> = [];
+      for (const job of runningListingMaintenanceJobs) {
+        try {
+          const cancelled = await api.cancelJob(job.id);
+          if (cancelled) {
+            stopped.push(job.id);
+          } else {
+            failed.push({ jobId: job.id, shopId: job.inputPath, message: "任务已结束，无法继续停止" });
+          }
+        } catch (error) {
+          failed.push({ jobId: job.id, shopId: job.inputPath, message: friendlyError(error) });
+        }
+      }
+      setResult(JSON.stringify({ stopped, failed }, null, 2));
+      if (failed.length > 0) setFriendlyTone("error");
+      setFriendlyMessage(`已停止 ${stopped.length} 个店铺定时运维${failed.length > 0 ? `，${failed.length} 个任务停止失败，请查看结果。` : "。"}`);
+      await onChanged();
     });
   };
 
@@ -702,12 +1196,13 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     });
   };
 
-  const loadCategories = async () => {
-    if (!shopId) throw new Error("请先选择店铺");
-    const data = await api.listCategories(shopId);
+  const loadCategories = async (targetShopId = shopId) => {
+    if (!targetShopId) throw new Error("请先选择店铺");
+    const data = await api.listCategories(targetShopId);
     setCategories(data);
-    writeQueryCache(shopId, "categories", data);
+    writeQueryCache(targetShopId, "categories", data);
     setSelectedCategoryId((current) => {
+      if (data.length === 0) return current;
       if (current && data.some((category) => category.id === current)) return current;
       const keyword = categoryKeyword.trim().toLowerCase();
       if (!keyword) return "";
@@ -716,6 +1211,32 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
       return (exact ?? (matches.length === 1 ? matches[0] : undefined))?.id ?? "";
     });
     setResult(`已加载 ${data.length} 个商品分类。`);
+  };
+
+  const addMaintenanceActionConfig = () => {
+    const category = categories.find((item) => item.id === Number(maintenanceActionCategoryId));
+    const action = actions.find((item) => item.id === Number(maintenanceActionId));
+    if (!category?.descriptionCategoryId) throw new Error("请先选择一个可用于 Ozon 的商品类目");
+    if (!action) throw new Error("请先选择活动");
+    if (!maintenanceActionPrice.trim()) throw new Error("请填写活动价格");
+    const config: ListingMaintenanceActionConfig = {
+      categoryId: category.descriptionCategoryId,
+      categoryName: category.name,
+      actionId: action.id,
+      actionTitle: action.title,
+      actionPrice: maintenanceActionPrice.trim(),
+      actionStock: maintenanceActionStock || 50,
+    };
+    setMaintenanceActionConfigs((current) => [
+      ...current.filter((item) => !(item.categoryId === config.categoryId && item.actionId === config.actionId)),
+      config,
+    ]);
+    setMaintenanceAutoAction(true);
+    setMaintenanceActionPrice("");
+  };
+
+  const removeMaintenanceActionConfig = (categoryId: number, actionId: number) => {
+    setMaintenanceActionConfigs((current) => current.filter((item) => item.categoryId !== categoryId || item.actionId !== actionId));
   };
 
   const loadCategoryProducts = async () => {
@@ -730,11 +1251,16 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
       categoryLimit,
     );
     cacheProductRows(rows, `category:${selected.descriptionCategoryId}:${selected.typeId ?? ""}`);
+    writeCachedCategoryProducts(shopId, selected.descriptionCategoryId, selected.typeId, rows);
     setResult(`已按分类拉取 ${rows.length} 个商品。`);
   };
 
   const updateSelectedCategoryProducts = async (mode: CategoryUpdateMode) => {
-    await run(async () => {
+    setResult("");
+    setFriendlyMessage("");
+    setFriendlyTone("info");
+    setInventoryFeedback({ tone: "running", message: "正在提交全类目更新到 Ozon，请稍等..." });
+    try {
       if (!shopId) throw new Error("请先选择店铺");
       const selected = selectedCategory();
       if (!selected) throw new Error("请先选择商品分类");
@@ -745,6 +1271,7 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
         shopId,
         categoryId: selected.descriptionCategoryId,
         typeId: selected.typeId,
+        cachedProducts: readCachedCategoryProducts(shopId, selected.descriptionCategoryId, selected.typeId),
         warehouseId: typeof selectedWarehouseId === "number" ? selectedWarehouseId : undefined,
         stock: stockValue,
         price: newPrice.trim(),
@@ -754,8 +1281,29 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
         updatePrice,
       });
       setResult(JSON.stringify(data, null, 2));
-      setFriendlyMessage(`已提交“${selected.name}”类目全部商品的${updateStock && updatePrice ? "库存和价格" : updateStock ? "库存" : "价格"}更新。`);
-    });
+      const actionName = updateStock && updatePrice ? "库存和价格" : updateStock ? "库存" : "价格";
+      const updatedCount = responseNumber(data, "total") ?? 0;
+      const stockBatches = responseNumber(data, "stockBatches") ?? 0;
+      const priceBatches = responseNumber(data, "priceBatches") ?? 0;
+      const details = [
+        `${updatedCount} 个商品`,
+        updateStock ? `库存更新为 ${stockValue}` : "",
+        updateStock ? `仓库 ${selectedWarehouseId || "-"}` : "",
+        updatePrice ? `售价更新为 ${newPrice.trim()}` : "",
+        updatePrice && newOldPrice.trim() ? `划线价更新为 ${newOldPrice.trim()}` : "",
+        updateStock ? `库存 ${stockBatches} 批次` : "",
+        updatePrice ? `价格 ${priceBatches} 批次` : "",
+      ].filter(Boolean).join("，");
+      const message = `全类目${actionName}更新已提交：“${selected.name}”，${details}。`;
+      setInventoryFeedback({ tone: "success", message });
+      setFriendlyMessage(message);
+    } catch (error) {
+      const message = friendlyError(error);
+      setFriendlyTone("error");
+      setFriendlyMessage(message);
+      setInventoryFeedback({ tone: "error", message });
+      setResult(message);
+    }
   };
 
   const categorySearchText = (category: CategoryOption) =>
@@ -818,7 +1366,7 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     setNextActionProductLastId(nextLastId);
     writeQueryCache(shopId, "selected-action", selectedActionId);
     writeQueryCache(shopId, `action-products:${selectedActionId}`, {
-      rows: enrichedRows,
+      rows: enrichedRows.map(lightweightActionProductRow),
       lastId,
       nextLastId,
     });
@@ -925,7 +1473,6 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     setTemplateProduct(payload);
     setTemplateJson(JSON.stringify(payload, null, 2));
     setTemplateStatus(status);
-    setPreviewPayload("");
   };
 
   const clearTemplateState = () => {
@@ -933,7 +1480,6 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     setTemplateName("");
     setTemplateProduct(undefined);
     setTemplateJson("");
-    setPreviewPayload("");
     setTemplateStatus("未选择商品模板");
   };
 
@@ -984,12 +1530,12 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
   };
 
   const saveCurrentTemplate = async () => {
-    if (!templateProduct) throw new Error("请先读取或粘贴模板");
+    const payload = readCurrentTemplatePayload(templateProduct, templateJson);
     const saved = await api.saveTemplate({
       id: selectedTemplateId || undefined,
       kind: PRODUCT_TEMPLATE_KIND,
       name: templateName.trim() || templateOfferId.trim() || "商品导入模板",
-      payload: templateProduct,
+      payload,
     });
     const data = await api.listTemplates(PRODUCT_TEMPLATE_KIND).catch(() => []);
     const nextTemplates = data.some((template) => template.id === saved.id)
@@ -1000,6 +1546,8 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     setTemplateName(saved.name);
     applyTemplate(saved.payload, `模板已保存：${saved.name}`);
     writeSelectedProductTemplateId(saved.id);
+    setFriendlyTone("info");
+    setFriendlyMessage(`模板已保存：${saved.name}，下次进入会自动载入。`);
     setTemplateStatus(`模板已保存：${saved.name}`);
   };
 
@@ -1034,19 +1582,6 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     setTemplateOfferId("");
   };
 
-  const previewTemplatePayload = async () => {
-    const payload = await api.buildImportPreview({
-      templateProduct: templateProduct ?? {},
-      offerId: previewSku,
-      title: previewTitle,
-      description: previewDescription,
-      imageUrls: previewImageUrls.split("\n").map((item) => item.trim()).filter(Boolean),
-      videoLinks: templateVideoLinks.split("\n").map((item) => item.trim()).filter(Boolean),
-      richJson: undefined,
-    });
-    setPreviewPayload(JSON.stringify(payload, null, 2));
-  };
-
   useEffect(() => {
     if (shopId) return;
     const firstEnabledShop = shops.find((shop) => shop.enabled) ?? shops[0];
@@ -1062,7 +1597,18 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
     setOrderRows([]);
     setSelectedPostingNumbers([]);
     if (shopId) {
+      const cachedWarehouses = readQueryCache<WarehouseOption[]>(shopId, "warehouses");
+      const cachedCategories = readQueryCache<CategoryOption[]>(shopId, "categories");
       applyCachedShopData(shopId);
+      if ((!cachedWarehouses || !cachedCategories) && !autoLoadedShopDataRef.current.has(shopId)) {
+        autoLoadedShopDataRef.current.add(shopId);
+        if (!cachedWarehouses) {
+          void loadWarehouses(shopId);
+        }
+        if (!cachedCategories) {
+          void loadCategories(shopId).catch((error) => setResult(String(error)));
+        }
+      }
     } else {
       setWarehouses([]);
       setProductRows([]);
@@ -1076,9 +1622,20 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
       setSelectedActionCandidateIds([]);
       setActionProductLastId("");
       setNextActionProductLastId("");
-      setWarehouseError("请先在设置页保存店铺，并选择店铺后获取仓库。");
+      setWarehouseError("请先在店铺管理里保存店铺，并选择店铺后获取仓库。");
     }
   }, [shopId]);
+
+  useEffect(() => {
+    const validShopIds = new Set(enabledShops.map((shop) => shop.id));
+    setCategoryVideoShopIds((current) => {
+      const next = normalizeShopIds([
+        ...current.filter((id) => validShopIds.has(id)),
+        shopId && validShopIds.has(shopId) ? shopId : "",
+      ]);
+      return next.join("|") === current.join("|") ? current : next;
+    });
+  }, [shops, shopId]);
 
   useEffect(() => {
     loadTemplates(true).catch((error) => setResult(String(error)));
@@ -1086,20 +1643,77 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
 
   const openShopCenter = (id: string) => {
     setShopId(id);
-    setTab("overview");
+    setTab("upload");
     setShopCenterOpen(true);
   };
+
+  const openCreateShop = () => {
+    setEditingShop(undefined);
+    setShopDialogOpen(true);
+  };
+
+  const openEditShop = (shop: Shop) => {
+    setEditingShop(shop);
+    setShopDialogOpen(true);
+  };
+  const currentShopRole = currentShop?.shopRole ?? "main";
+  const currentShopStatusItems = [
+    { label: "店铺 ID", value: currentShop?.id || "-" },
+    { label: "关联账号", value: currentShop?.clientId || "-" },
+    {
+      label: currentShopRole === "follower" ? "跟卖主店" : "跟卖店铺",
+      value: currentShopRole === "follower"
+        ? (currentMainShop?.name ?? currentShop?.followsShopId ?? "未选择主店")
+        : `${followerShops.length} 个`,
+    },
+    { label: "商品水印", value: currentShop?.watermarkPath ? "已设置" : "未设置" },
+    { label: "API Key", value: currentShop?.apiKeyStored ? "已保存" : "未保存" },
+  ];
+  const activeTask = TASK_TABS.find((item) => item.key === tab) ?? TASK_TABS[0];
 
   if (!shopCenterOpen) {
     return (
       <div className="content-grid">
+        <ShopMaintenanceHomePanel
+          shop={currentShop}
+          shops={shops}
+          runningJobs={runningListingMaintenanceJobs}
+          runningJob={runningListingMaintenanceJob}
+          canStart={maintenanceEnabled}
+          onStart={startListingMaintenance}
+          onPause={pauseListingMaintenance}
+          onStartAll={startAllListingMaintenance}
+          onPauseAll={pauseAllListingMaintenance}
+        />
         <ShopManagementPanel
           shops={shops}
           selectedShopId={shopId}
           onSelectShop={setShopId}
           onOpenShopCenter={openShopCenter}
-          onSettings={() => onNavigate("settings")}
+          onCreateShop={openCreateShop}
+          onEditShop={openEditShop}
         />
+        {shopMessage ? <section className="panel"><span className="badge">{shopMessage}</span></section> : null}
+        {shopDialogOpen ? (
+          <ShopEditorDialog
+            shop={editingShop}
+            shops={shops}
+            onClose={() => setShopDialogOpen(false)}
+            onSaved={async (saved) => {
+              setShopMessage(`${saved.name} 已保存。`);
+              setShopDialogOpen(false);
+              setEditingShop(undefined);
+              setShopId(saved.id);
+              await onChanged();
+            }}
+            onDeleted={async () => {
+              setShopMessage("店铺已删除。");
+              setShopDialogOpen(false);
+              setEditingShop(undefined);
+              await onChanged();
+            }}
+          />
+        ) : null}
       </div>
     );
   }
@@ -1109,44 +1723,53 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
       <section className="panel shop-workspace shop-workspace-center">
         <div className="shop-detail">
           <div className="shop-hero">
-            <div className="shop-avatar large">{currentShop?.name.slice(0, 1).toUpperCase() || "店"}</div>
-            <div>
-              <h2>{currentShop?.name || "未选择店铺"}</h2>
-              <div className="shop-meta">
-                <span>店铺 ID: {currentShop?.id || "-"}</span>
-                <span>关联账号: {currentShop?.clientId || "-"}</span>
-                <span>{(currentShop?.shopRole ?? "main") === "follower" ? `跟卖: ${currentMainShop?.name ?? currentShop?.followsShopId ?? "未选择主店"}` : `主店跟卖数: ${followerShops.length}`}</span>
-                <span>水印: {currentShop?.watermarkPath ? "已设置" : "未设置"}</span>
-                <span className={currentShop?.enabled ? "status-label ok" : "status-label warn"}>{currentShop?.enabled ? "店铺启用" : "店铺停用"}</span>
+            <div className="shop-hero-main">
+              <div className="shop-avatar large">{currentShop?.name.slice(0, 1).toUpperCase() || "店"}</div>
+              <div className="shop-hero-copy">
+                <div className="shop-hero-title">
+                  <span className={currentShop?.enabled ? "status-label ok" : "status-label warn"}>{currentShop?.enabled ? "店铺启用" : "店铺停用"}</span>
+                  <span className="status-label neutral">{currentShopRole === "follower" ? "跟卖店铺" : "主店铺"}</span>
+                </div>
+                <h2>{currentShop?.name || "未选择店铺"}</h2>
+                <p>{activeTask.label}：{activeTask.description}</p>
               </div>
             </div>
             <div className="shop-actions">
-              <select value={shopId} onChange={(event) => setShopId(event.target.value)}>
-                <option value="">选择店铺</option>
-                {shops.map((shop) => (
-                  <option key={shop.id} value={shop.id}>{shop.name} ({shop.clientId})</option>
-                ))}
-              </select>
-              <button className="secondary-button" onClick={() => setShopCenterOpen(false)}>返回店铺管理</button>
-              <button className="secondary-button" onClick={() => onNavigate("settings")}>店铺设置</button>
-              <button className="secondary-button" onClick={() => onNavigate("jobs")}>任务列表</button>
+              <label className="shop-switcher">
+                <span>当前店铺</span>
+                <select value={shopId} onChange={(event) => setShopId(event.target.value)}>
+                  <option value="">选择店铺</option>
+                  {shops.map((shop) => (
+                    <option key={shop.id} value={shop.id}>{shop.name} ({shop.clientId})</option>
+                  ))}
+                </select>
+              </label>
+              <div className="shop-action-buttons">
+                <button className="secondary-button" onClick={() => setShopCenterOpen(false)}>返回店铺管理</button>
+                {currentShop ? <button className="secondary-button" onClick={() => openEditShop(currentShop)}>编辑店铺</button> : null}
+                <button className="secondary-button" onClick={() => onNavigate("jobs")}>任务列表</button>
+              </div>
             </div>
           </div>
-          <TaskNavigation activeTab={tab} onSelect={setTab} />
+          <div className="shop-center-summary">
+            {currentShopStatusItems.map((item) => (
+              <div key={item.label} className="shop-summary-item">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </div>
+            ))}
+          </div>
+          <div className="shop-center-body">
+            <div className="shop-primary-workflow">
+              <span className="eyebrow">推荐起点</span>
+              <h3>先完成批量上架</h3>
+              <p>检查店铺、Excel 和 SKU 图片匹配后提交任务。上架完成后，再进入更新、订单文件和库存活动。</p>
+              <button className="primary-button" onClick={() => setTab("upload")}>进入上架商品</button>
+            </div>
+            <TaskNavigation activeTab={tab} onSelect={setTab} />
+          </div>
         </div>
       </section>
-
-      {tab === "overview" ? (
-        <OverviewPanel
-          shop={currentShop}
-          templateReady={Boolean(templateProduct)}
-          warehouseCount={warehouses.length}
-          cachedOrderOutputRoot={orderOutputRoot}
-          onSelect={setTab}
-          onSettings={() => onNavigate("settings")}
-          onJobs={() => onNavigate("jobs")}
-        />
-      ) : null}
 
       {friendlyMessage ? (
         <section className={friendlyTone === "error" ? "panel feedback-panel error" : "panel feedback-panel"}>
@@ -1161,7 +1784,7 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
             <div className="panel-header">
               <div>
                 <h2>批量上架</h2>
-                <p className="muted">先检查店铺、OSS、Excel 和 SKU 图片匹配，再提交 Ozon import。</p>
+                <p className="muted">先检查店铺、Excel 和 SKU 图片匹配，再提交 Ozon import。</p>
               </div>
               <div className="toolbar">
                 <button className="secondary-button" onClick={preflightUpload} disabled={checking}>{checking ? "检查中" : "预检查"}</button>
@@ -1210,22 +1833,11 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
             setTemplateJson={setTemplateJson}
             templateStatus={templateStatus}
             templateProduct={templateProduct}
-            previewSku={previewSku}
-            setPreviewSku={setPreviewSku}
-            previewTitle={previewTitle}
-            setPreviewTitle={setPreviewTitle}
-            previewDescription={previewDescription}
-            setPreviewDescription={setPreviewDescription}
-            previewImageUrls={previewImageUrls}
-            setPreviewImageUrls={setPreviewImageUrls}
-            previewPayload={previewPayload}
-            clearPreviewPayload={() => setPreviewPayload("")}
             fetchOnlineTemplate={() => run(fetchOnlineTemplate)}
             applyJsonTemplate={() => run(async () => applyJsonTemplate())}
             saveCurrentTemplate={() => run(saveCurrentTemplate)}
             deleteCurrentTemplate={() => run(deleteCurrentTemplate)}
             clearTemplate={clearTemplate}
-            previewTemplatePayload={() => run(previewTemplatePayload)}
           />
           <PreflightSection issues={issues} onNavigate={onNavigate} />
         </>
@@ -1237,9 +1849,10 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
             <div className="panel-header">
               <div>
                 <h2>已上架更新</h2>
-                <p className="muted">按货号读取线上商品，可选择更新标题、简介、图片、视频和富内容。</p>
+                <p className="muted">按货号读取线上商品，可选择更新标题、简介、图片、视频和富内容；只更新视频时不需要图片目录。</p>
               </div>
               <div className="toolbar">
+                <button className="secondary-button" onClick={useVideoOnlyUpdate}>只更新视频</button>
                 <button className="secondary-button" onClick={preflightUpdate} disabled={checking}>{checking ? "检查中" : "预检查"}</button>
                 <button className="primary-button" onClick={submitUpdate}>提交更新任务</button>
               </div>
@@ -1254,6 +1867,12 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
               templateVideoLinks={templateVideoLinks}
               setTemplateVideoLinks={setTemplateVideoLinks}
             />
+            {!updateImages ? (
+              <div className="operation-feedback">
+                <strong>当前不会检查图片目录</strong>
+                <span>未勾选“更新图片”时，图片目录只作为结果表备用输出目录；只更新视频时 Excel 只需要货号列。</span>
+              </div>
+            ) : null}
             <div className="check-grid">
               {[
                 ["updateTitle", "更新标题", updateTitle, setUpdateTitle],
@@ -1282,22 +1901,11 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
             setTemplateJson={setTemplateJson}
             templateStatus={templateStatus}
             templateProduct={templateProduct}
-            previewSku={previewSku}
-            setPreviewSku={setPreviewSku}
-            previewTitle={previewTitle}
-            setPreviewTitle={setPreviewTitle}
-            previewDescription={previewDescription}
-            setPreviewDescription={setPreviewDescription}
-            previewImageUrls={previewImageUrls}
-            setPreviewImageUrls={setPreviewImageUrls}
-            previewPayload={previewPayload}
-            clearPreviewPayload={() => setPreviewPayload("")}
             fetchOnlineTemplate={() => run(fetchOnlineTemplate)}
             applyJsonTemplate={() => run(async () => applyJsonTemplate())}
             saveCurrentTemplate={() => run(saveCurrentTemplate)}
             deleteCurrentTemplate={() => run(deleteCurrentTemplate)}
             clearTemplate={clearTemplate}
-            previewTemplatePayload={() => run(previewTemplatePayload)}
           />
           <PreflightSection issues={issues} onNavigate={onNavigate} />
         </>
@@ -1349,6 +1957,10 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
                 onChange={(event) => setOrderNumbersText(event.target.value)}
                 placeholder={"每行一个，例如 12345678-0001-1"}
               />
+            </div>
+            <div className="field">
+              <label>物流贴单 PDF 地址</label>
+              <textarea rows={10} value={orderShippingLabelText} onChange={(event) => setOrderShippingLabelText(event.target.value)} placeholder="每行一个 PDF 地址，顺序与订单一致，不能重复使用" />
             </div>
           </section>
 
@@ -1464,7 +2076,7 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
           actionStock={actionStock}
           setActionStock={setActionStock}
           refreshActions={() => run(loadActions)}
-          onSettings={() => onNavigate("settings")}
+          onSettings={() => setShopCenterOpen(false)}
         />
       ) : null}
 
@@ -1481,6 +2093,43 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
           </div>
         </section>
 
+        <ListingMaintenancePanel
+          shop={currentShop}
+          warehouses={warehouses}
+          loadWarehouses={() => run(async () => loadWarehouses(shopId))}
+          categories={categories}
+          loadCategories={() => run(loadCategories)}
+          categorySearch={maintenanceCategorySearch}
+          setCategorySearch={setMaintenanceCategorySearch}
+          actions={actions}
+          loadActions={() => run(loadActions)}
+          intervalMinutes={maintenanceIntervalMinutes}
+          setIntervalMinutes={setMaintenanceIntervalMinutes}
+          autoStock={maintenanceAutoStock}
+          setAutoStock={setMaintenanceAutoStock}
+          autoBarcode={maintenanceAutoBarcode}
+          setAutoBarcode={setMaintenanceAutoBarcode}
+          autoAction={maintenanceAutoAction}
+          setAutoAction={setMaintenanceAutoAction}
+          warehouseId={maintenanceWarehouseId}
+          setWarehouseId={setMaintenanceWarehouseId}
+          stock={maintenanceStock}
+          setStock={setMaintenanceStock}
+          actionCategoryId={maintenanceActionCategoryId}
+          setActionCategoryId={setMaintenanceActionCategoryId}
+          actionId={maintenanceActionId}
+          setActionId={setMaintenanceActionId}
+          actionPrice={maintenanceActionPrice}
+          setActionPrice={setMaintenanceActionPrice}
+          actionStock={maintenanceActionStock}
+          setActionStock={setMaintenanceActionStock}
+          actionConfigs={maintenanceActionConfigs}
+          addActionConfig={() => run(async () => addMaintenanceActionConfig())}
+          removeActionConfig={removeMaintenanceActionConfig}
+          saveConfig={saveListingMaintenanceConfig}
+          startTask={startListingMaintenance}
+        />
+
         {inventoryMode === "products" ? (
         <>
         <section className="panel">
@@ -1488,7 +2137,7 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
             <span className="step-dot">1</span>
             <div>
               <h2>查询商品</h2>
-              <p className="muted">新手按顺序操作：加载分类，输入关键词选择分类，再查询商品。</p>
+              <p className="muted">默认使用本地缓存分类；需要同步 Ozon 最新分类时再点击刷新类目。</p>
             </div>
           </div>
           <div className="form-grid">
@@ -1516,7 +2165,7 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
             </div>
           </div>
           <div className="toolbar action-row">
-            <button className="secondary-button" onClick={() => run(loadCategories)}>加载分类</button>
+            <button className="secondary-button" onClick={() => run(loadCategories)}>刷新类目</button>
             <button className="primary-button" onClick={() => run(loadCategoryProducts)}>查询商品</button>
             <button className="secondary-button" onClick={loadZeroStock}>拉取零库存</button>
             <button className="secondary-button" onClick={loadNoBarcode}>拉取无条码</button>
@@ -1532,10 +2181,37 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
               <p className="muted">上方输入项会用于下面的操作；先确认操作范围是“所选类目全部商品”还是“当前列表”。</p>
             </div>
           </div>
+          {inventoryFeedback ? (
+            <div className={inventoryFeedback.tone === "error" ? "operation-feedback error" : "operation-feedback"}>
+              <strong>{inventoryFeedback.tone === "error" ? "操作失败" : inventoryFeedback.tone === "running" ? "提交中" : "操作成功"}</strong>
+              <span>{inventoryFeedback.message}</span>
+            </div>
+          ) : null}
+          <div className="warehouse-query-block">
+            <div>
+              <strong>仓库查询</strong>
+              <span className="muted">补库存前先查询当前店铺仓库，查询结果会同步到下方仓库下拉。</span>
+            </div>
+            <button className="secondary-button" disabled={!shopId || warehousesLoading} onClick={() => loadWarehouses(shopId)}>
+              {warehousesLoading ? "查询中" : "查询仓库"}
+            </button>
+          </div>
+          {warehouseError ? <div className="alert">{warehouseError}</div> : null}
+          <div className="table-wrap compact-table">
+            <table>
+              <thead><tr><th>仓库名称</th><th>ID</th></tr></thead>
+              <tbody>
+                {warehouses.map((warehouse) => (
+                  <tr key={warehouse.warehouseId}><td>{warehouse.name}</td><td>{warehouse.warehouseId}</td></tr>
+                ))}
+                {warehouses.length === 0 ? <tr><td colSpan={2} className="muted">{warehousesLoading ? "正在查询仓库数据..." : "暂无仓库数据。"}</td></tr> : null}
+              </tbody>
+            </table>
+          </div>
           <div className="form-grid compact-form-grid">
             <div className="field">
               <label>补库存仓库</label>
-              <select value={selectedWarehouseId} onChange={(event) => setSelectedWarehouseId(Number(event.target.value))}>
+              <select value={selectedWarehouseId} onChange={(event) => setSelectedWarehouseId(event.target.value ? Number(event.target.value) : "")}>
                 <option value="">选择仓库</option>
                 {warehouses.map((warehouse) => (
                   <option key={warehouse.warehouseId} value={warehouse.warehouseId}>{warehouse.name} ({warehouse.warehouseId})</option>
@@ -1588,6 +2264,42 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
                 同时更新
               </button>
             </div>
+            <div className="operation-card">
+              <strong>全类目更新视频</strong>
+              <span>把视频链接更新到所选类目下所有商品，不需要 Excel 和图片目录；可同时提交多个店铺独立任务。</span>
+              <button className="primary-button" onClick={submitCategoryVideoUpdate}>
+                更新类目视频
+              </button>
+            </div>
+          </div>
+          <div className="field">
+            <label>视频更新店铺 ({categoryVideoShopIds.length}/{enabledShops.length})</label>
+            <div className="toolbar">
+              <button type="button" className="secondary-button" onClick={() => setCategoryVideoShopIds(enabledShops.map((shop) => shop.id))}>全选店铺</button>
+              <button type="button" className="secondary-button" onClick={() => setCategoryVideoShopIds(shopId ? [shopId] : [])}>只选当前店铺</button>
+            </div>
+            <div className="check-grid compact-checks">
+              {enabledShops.map((shop) => (
+                <label key={shop.id} className="check-card">
+                  <input
+                    type="checkbox"
+                    checked={categoryVideoShopIds.includes(shop.id)}
+                    onChange={(event) => setCategoryVideoShopIds((current) => (
+                      event.target.checked
+                        ? normalizeShopIds([...current, shop.id])
+                        : current.filter((id) => id !== shop.id)
+                    ))}
+                  />
+                  <span>{shop.name}</span>
+                </label>
+              ))}
+              {enabledShops.length === 0 ? <span className="muted">暂无启用店铺。</span> : null}
+            </div>
+            <span className="muted">每个店铺会创建一个独立任务，互不取消；任务进度到“任务记录”查看。</span>
+          </div>
+          <div className="field">
+            <label>视频链接 (每行一个)</label>
+            <textarea rows={3} value={templateVideoLinks} onChange={(event) => setTemplateVideoLinks(event.target.value)} placeholder="https://..." />
           </div>
           <InventoryTable
             products={products}
@@ -1604,6 +2316,7 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
             newOldPrice={newOldPrice}
             currencyCode={currencyCode}
             setResult={setResult}
+            setFeedback={setInventoryFeedback}
           />
         </section>
         </>
@@ -1681,26 +2394,6 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
         <>
           <section className="panel half">
             <div className="panel-header">
-              <h2>仓库</h2>
-              <button className="secondary-button" disabled={!shopId || warehousesLoading} onClick={() => loadWarehouses(shopId)}>
-                {warehousesLoading ? "获取中" : "刷新仓库"}
-              </button>
-            </div>
-            {warehouseError ? <div className="alert">{warehouseError}</div> : null}
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>仓库名称</th><th>ID</th></tr></thead>
-                <tbody>
-                  {warehouses.map((warehouse) => (
-                    <tr key={warehouse.warehouseId}><td>{warehouse.name}</td><td>{warehouse.warehouseId}</td></tr>
-                  ))}
-                  {warehouses.length === 0 ? <tr><td colSpan={2} className="muted">{warehousesLoading ? "正在获取仓库数据..." : "暂无仓库数据。"}</td></tr> : null}
-                </tbody>
-              </table>
-            </div>
-          </section>
-          <section className="panel half">
-            <div className="panel-header">
               <h2>连接测试</h2>
               <button className="primary-button" disabled={!shopId} onClick={() => run(async () => {
                 const data = await api.testOzonConnection(shopId);
@@ -1709,14 +2402,39 @@ export function OzonPage({ shops, settings, onChanged, onNavigate }: Props) {
             </div>
             <LongOutput value={result} emptyText="接口返回和错误会显示在这里。" maxHeight={180} onClear={() => setResult("")} />
           </section>
+          <section className="panel half">
+            <h2>诊断提示</h2>
+            <p className="muted">仓库查询已移动到“库存价格活动”的“处理商品”区域；这里保留 Ozon 连接测试，用于排查 Client ID、API Key 和接口连通性。</p>
+          </section>
         </>
       ) : null}
 
-      {tab !== "api" && tab !== "overview" ? (
+      {tab !== "api" && tab !== "inventory" ? (
         <section className="panel">
           <h2>接口结果</h2>
           <LongOutput value={result} emptyText="任务提交结果和错误会显示在这里。" maxHeight={180} onClear={() => setResult("")} />
         </section>
+      ) : null}
+      {shopDialogOpen ? (
+        <ShopEditorDialog
+          shop={editingShop}
+          shops={shops}
+          onClose={() => setShopDialogOpen(false)}
+          onSaved={async (saved) => {
+            setShopMessage(`${saved.name} 已保存。`);
+            setShopDialogOpen(false);
+            setEditingShop(undefined);
+            setShopId(saved.id);
+            await onChanged();
+          }}
+          onDeleted={async () => {
+            setShopMessage("店铺已删除。");
+            setShopDialogOpen(false);
+            setEditingShop(undefined);
+            setShopCenterOpen(false);
+            await onChanged();
+          }}
+        />
       ) : null}
     </div>
   );
@@ -1742,80 +2460,52 @@ function TaskNavigation(props: {
   );
 }
 
-function OverviewPanel(props: {
-  shop: Shop | undefined;
-  templateReady: boolean;
-  warehouseCount: number;
-  cachedOrderOutputRoot: string;
-  onSelect: (tab: TabKey) => void;
-  onSettings: () => void;
-  onJobs: () => void;
+function ShopMaintenanceHomePanel(props: {
+  shop?: Shop;
+  shops: Shop[];
+  runningJobs: JobSummary[];
+  runningJob?: JobSummary;
+  canStart: boolean;
+  onStart: () => void;
+  onPause: () => void;
+  onStartAll: () => void;
+  onPauseAll: () => void;
 }) {
-  const visibleTasks = TASK_TABS.filter((task) => task.key !== "overview");
+  const running = Boolean(props.runningJob);
+  const runnableShopCount = props.shops.filter((shop) => shop.enabled && isListingMaintenanceEnabledForShop(shop)).length;
   return (
-    <>
-      <section className="panel task-brief">
+    <section className="panel">
+      <div className="panel-header">
         <div>
-          <h2>店铺工作台</h2>
-          <p className="muted">先确认店铺，再按当前目标进入对应任务。日常高频路径是发布新品、更新商品、下载订单文件和库存价格活动。</p>
+          <h2>定时运维</h2>
+          <p className="muted">启动后每 30 分钟执行一次上架后运维任务；批量执行会按每个已启用店铺保存的配置启动。</p>
         </div>
         <div className="toolbar">
-          <button className="secondary-button" onClick={props.onSettings}>店铺设置</button>
-          <button className="secondary-button" onClick={props.onJobs}>任务记录</button>
+          <button className="primary-button" disabled={!props.shop || running || !props.canStart} onClick={props.onStart}>启动定时运维</button>
+          <button className="secondary-button" disabled={!running} onClick={props.onPause}>暂停定时运维</button>
+          <button className="primary-button" disabled={runnableShopCount === 0} onClick={props.onStartAll}>全部店铺执行</button>
+          <button className="danger-button" disabled={props.runningJobs.length === 0} onClick={props.onPauseAll}>全部店铺停止</button>
         </div>
-      </section>
-
-      <section className="panel">
-        <div className="overview-status-grid">
-          <div className="status-block">
-            <span>当前店铺</span>
-            <strong>{props.shop?.name || "未选择"}</strong>
-            <em>{props.shop?.enabled ? "已启用" : "需确认店铺状态"}</em>
-          </div>
-          <div className="status-block">
-            <span>API Key</span>
-            <strong>{props.shop?.apiKeyStored ? "已保存" : "未保存"}</strong>
-            <em>{props.shop?.apiKeyStored ? "可执行接口任务" : "先到设置页补齐"}</em>
-          </div>
-          <div className="status-block">
-            <span>商品模板</span>
-            <strong>{props.templateReady ? "已选择" : "未选择"}</strong>
-            <em>发布和更新任务会用到</em>
-          </div>
-          <div className="status-block">
-            <span>仓库缓存</span>
-            <strong>{props.warehouseCount} 个</strong>
-            <em>库存操作前可在诊断页刷新</em>
-          </div>
-          <div className="status-block wide">
-            <span>订单输出目录</span>
-            <strong>{props.cachedOrderOutputRoot || "未选择"}</strong>
-            <em>订单下载会记住最近一次目录</em>
-          </div>
+      </div>
+      <div className="shop-center-summary">
+        <div className="shop-summary-item">
+          <span>当前店铺</span>
+          <strong>{props.shop?.name ?? "未选择"}</strong>
         </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>按目标开始</h2>
-            <p className="muted">每张卡片对应一类工作，进入后只处理这一类任务。</p>
-          </div>
+        <div className="shop-summary-item">
+          <span>可执行店铺</span>
+          <strong>{runnableShopCount} 个</strong>
         </div>
-        <div className="workflow-grid">
-          {visibleTasks.map((task) => (
-            <article key={task.key} className="workflow-card">
-              <div>
-                <span className="badge neutral">{task.label}</span>
-                <h3>{task.primaryAction}</h3>
-                <p className="muted">{task.description}</p>
-              </div>
-              <button className="secondary-button" onClick={() => props.onSelect(task.key)}>进入</button>
-            </article>
-          ))}
+        <div className="shop-summary-item">
+          <span>运行中</span>
+          <strong>{props.runningJobs.length} 个</strong>
         </div>
-      </section>
-    </>
+        <div className="shop-summary-item">
+          <span>当前状态</span>
+          <strong>{running ? "运行中" : "已暂停"}</strong>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1824,67 +2514,152 @@ function ShopManagementPanel(props: {
   selectedShopId: string;
   onSelectShop: (id: string) => void;
   onOpenShopCenter: (id: string) => void;
-  onSettings: () => void;
+  onCreateShop: () => void;
+  onEditShop: (shop: Shop) => void;
 }) {
+  const pageSize = 10;
+  const [keyword, setKeyword] = useState("");
+  const [page, setPage] = useState(1);
+  const normalizedKeyword = keyword.trim().toLowerCase();
+  const filteredShops = normalizedKeyword
+    ? props.shops.filter((shop) => {
+      const haystack = [shop.name, shop.clientId, shop.id].join(" ").toLowerCase();
+      return haystack.includes(normalizedKeyword);
+    })
+    : props.shops;
+  const totalPages = Math.max(1, Math.ceil(filteredShops.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pagedShops = filteredShops.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const enabledCount = props.shops.filter((shop) => shop.enabled).length;
+  const onlineCount = props.shops.filter((shop) => shop.apiKeyStored).length;
+  const watermarkCount = props.shops.filter((shop) => shop.watermarkPath).length;
+
+  useEffect(() => {
+    setPage(1);
+  }, [normalizedKeyword]);
+
+  useEffect(() => {
+    setPage((value) => Math.min(value, totalPages));
+  }, [totalPages]);
+
   return (
     <>
       <section className="panel shop-manager-filter">
         <div className="panel-header">
           <div>
             <h2>店铺管理</h2>
-            <p className="muted">先选择店铺卡片，进入功能中心后再操作该店铺的上架、核价、库存和活动。</p>
+            <p className="muted">先维护店铺资料，再进入功能中心操作上架、更新、订单文件、库存和活动。</p>
           </div>
           <div className="toolbar">
-            <button className="primary-button" onClick={props.onSettings}>新增/编辑店铺</button>
+            <button className="primary-button" onClick={props.onCreateShop}>新增店铺</button>
           </div>
+        </div>
+        <div className="shop-manager-summary">
+          <div>
+            <span>店铺总数</span>
+            <strong>{props.shops.length}</strong>
+          </div>
+          <div>
+            <span>已启用</span>
+            <strong>{enabledCount}</strong>
+          </div>
+          <div>
+            <span>接口在线</span>
+            <strong>{onlineCount}</strong>
+          </div>
+          <div>
+            <span>水印已设</span>
+            <strong>{watermarkCount}</strong>
+          </div>
+          <label className="shop-search-field">
+            <span>搜索店铺</span>
+            <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="店铺名、账号或 ID" />
+          </label>
         </div>
       </section>
 
       <section className="panel shop-card-panel">
-        <div className="shop-card-grid">
-          {props.shops.map((shop) => (
-            <article key={shop.id} className={shop.id === props.selectedShopId ? "shop-card active" : "shop-card"} onClick={() => props.onSelectShop(shop.id)}>
-              <div className="shop-card-head">
-                <span className="shop-avatar large">{shop.name.slice(0, 1).toUpperCase()}</span>
-                <div className="shop-card-title">
-                  <h3>{shop.name}</h3>
-                  <span>ID: {shop.id}</span>
-                  <span>账号: {shop.clientId}</span>
-                  <span>{(shop.shopRole ?? "main") === "follower" ? "跟卖店铺" : "主店"}</span>
-                </div>
-                <button className="primary-button" onClick={(event) => {
-                  event.stopPropagation();
-                  props.onOpenShopCenter(shop.id);
-                }}>功能中心</button>
-              </div>
-              <div className="shop-card-status">
-                <div>
-                  <span>商品水印</span>
-                  <strong className={shop.watermarkPath ? "green-text" : "red-text"}>{shop.watermarkPath ? "已设置" : "未设置"}</strong>
-                </div>
-                <div>
-                  <span>账号状态</span>
-                  <strong className={shop.apiKeyStored ? "green-text" : "red-text"}>{shop.apiKeyStored ? "在线" : "离线"}</strong>
-                </div>
-                <div>
-                  <span>店铺状态</span>
-                  <strong className={shop.enabled ? "green-text" : "red-text"}>{shop.enabled ? "启用" : "停用"}</strong>
-                </div>
-              </div>
-              <div className="shop-card-foot">
-                <strong>正在执行的任务</strong>
-                <span className="muted">暂无执行任务</span>
-              </div>
-            </article>
-          ))}
+        <div className="shop-card-panel-head">
+          <div>
+            <h3>店铺列表</h3>
+            <span className="muted">当前显示 {filteredShops.length} / {props.shops.length} 个，每页 10 个。</span>
+          </div>
+          {keyword ? <button className="secondary-button" onClick={() => setKeyword("")}>清空搜索</button> : null}
+        </div>
+        <div className="shop-table-wrap">
+          {pagedShops.length > 0 ? (
+            <table className="shop-table">
+              <thead>
+                <tr>
+                  <th>店铺</th>
+                  <th>账号</th>
+                  <th>类型</th>
+                  <th>商品水印</th>
+                  <th>账号状态</th>
+                  <th>店铺状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedShops.map((shop) => (
+                  <tr key={shop.id} className={shop.id === props.selectedShopId ? "active" : ""} onClick={() => props.onSelectShop(shop.id)}>
+                    <td>
+                      <div className="shop-table-main">
+                        <span className="shop-avatar">{shop.name.slice(0, 1).toUpperCase()}</span>
+                        <div>
+                          <strong>{shop.name}</strong>
+                          <span>ID: {shop.id}</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>{shop.clientId}</td>
+                    <td>{(shop.shopRole ?? "main") === "follower" ? "跟卖店铺" : "主店"}</td>
+                    <td><strong className={shop.watermarkPath ? "green-text" : "red-text"}>{shop.watermarkPath ? "已设置" : "未设置"}</strong></td>
+                    <td><strong className={shop.apiKeyStored ? "green-text" : "red-text"}>{shop.apiKeyStored ? "在线" : "离线"}</strong></td>
+                    <td><strong className={shop.enabled ? "green-text" : "red-text"}>{shop.enabled ? "启用" : "停用"}</strong></td>
+                    <td>
+                      <div className="shop-table-actions">
+                        <button className="primary-button" onClick={(event) => {
+                          event.stopPropagation();
+                          props.onOpenShopCenter(shop.id);
+                        }}>功能中心</button>
+                        <button className="secondary-button" onClick={(event) => {
+                          event.stopPropagation();
+                          props.onEditShop(shop);
+                        }}>编辑</button>
+                        <button className="secondary-button" onClick={(event) => {
+                          event.stopPropagation();
+                          props.onOpenShopCenter(shop.id);
+                        }}>上架商品</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
           {props.shops.length === 0 ? (
             <div className="empty-shop-state">
               <h3>暂无店铺</h3>
-              <p className="muted">先在设置里保存店铺和 Ozon API Key，再从这里进入每个店铺的功能中心。</p>
-              <button className="primary-button" onClick={props.onSettings}>去配置店铺</button>
+              <p className="muted">先新增店铺并保存 Ozon API Key，再从这里进入每个店铺的功能中心。</p>
+              <button className="primary-button" onClick={props.onCreateShop}>新增店铺</button>
+            </div>
+          ) : null}
+          {props.shops.length > 0 && filteredShops.length === 0 ? (
+            <div className="empty-shop-state">
+              <h3>没有匹配店铺</h3>
+              <p className="muted">换一个店铺名、账号或 ID 再搜索。</p>
+              <button className="secondary-button" onClick={() => setKeyword("")}>清空搜索</button>
             </div>
           ) : null}
         </div>
+        {filteredShops.length > pageSize ? (
+          <div className="pagination-bar shop-pagination">
+            <span>第 {currentPage} / {totalPages} 页</span>
+            <button className="secondary-button" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button>
+            <button className="secondary-button" disabled={currentPage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>下一页</button>
+          </div>
+        ) : null}
       </section>
     </>
   );
@@ -1945,7 +2720,7 @@ function AutoUploadPostProcessPanel(props: {
       <div className="panel-header">
         <div>
           <h3>上架后自动处理</h3>
-          <p className="muted">商品获得 Ozon 商品 ID 后，自动生成条码、补库存并加入指定活动。关闭时保持原上架流程不变。</p>
+          <p className="muted">仅用于旧的 Excel 上架流程。云图库自动上架只提交商品到 Ozon，库存、条码和活动请使用下方“上架后自动运维”。</p>
         </div>
         <label className="check-card">
           <input type="checkbox" checked={props.enabled} onChange={(event) => props.setEnabled(event.target.checked)} />
@@ -1987,7 +2762,7 @@ function AutoUploadPostProcessPanel(props: {
             </div>
           </div>
           <div className="toolbar action-row">
-            <button className="secondary-button" type="button" onClick={props.refreshWarehouses}>刷新仓库</button>
+            <button className="secondary-button" type="button" onClick={props.refreshWarehouses}>查询仓库</button>
             <button className="secondary-button" type="button" onClick={props.refreshActions}>刷新活动</button>
             <span className="muted">自动处理失败会写入任务日志和结果表，不会中断后续商品上架。</span>
           </div>
@@ -2109,6 +2884,178 @@ function OrderPostingPanel(props: {
             {props.rows.length === 0 ? <tr><td colSpan={7} className="muted">点击“获取订单”加载店铺订单。</td></tr> : null}
           </tbody>
         </table>
+      </div>
+    </section>
+  );
+}
+
+function ListingMaintenancePanel(props: {
+  shop: Shop | undefined;
+  warehouses: WarehouseOption[];
+  loadWarehouses: () => void;
+  categories: CategoryOption[];
+  loadCategories: () => void;
+  categorySearch: string;
+  setCategorySearch: (value: string) => void;
+  actions: ActionRow[];
+  loadActions: () => void;
+  intervalMinutes: number;
+  setIntervalMinutes: (value: number) => void;
+  autoStock: boolean;
+  setAutoStock: (value: boolean) => void;
+  autoBarcode: boolean;
+  setAutoBarcode: (value: boolean) => void;
+  autoAction: boolean;
+  setAutoAction: (value: boolean) => void;
+  warehouseId: number | "";
+  setWarehouseId: (value: number | "") => void;
+  stock: number;
+  setStock: (value: number) => void;
+  actionCategoryId: number | "";
+  setActionCategoryId: (value: number | "") => void;
+  actionId: number | "";
+  setActionId: (value: number | "") => void;
+  actionPrice: string;
+  setActionPrice: (value: string) => void;
+  actionStock: number;
+  setActionStock: (value: number) => void;
+  actionConfigs: ListingMaintenanceActionConfig[];
+  addActionConfig: () => void;
+  removeActionConfig: (categoryId: number, actionId: number) => void;
+  saveConfig: () => void;
+  startTask: () => void;
+}) {
+  const enabled = props.autoStock || props.autoBarcode || (props.autoAction && props.actionConfigs.length > 0);
+  const categoryKeyword = props.categorySearch.trim().toLowerCase();
+  const visibleCategories = categoryKeyword
+    ? props.categories.filter((category) => (
+      `${category.name} ${category.id} ${category.descriptionCategoryId ?? ""} ${category.typeId ?? ""}`
+        .toLowerCase()
+        .includes(categoryKeyword)
+    ))
+    : props.categories;
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <div>
+          <h2>上架后自动运维</h2>
+          <p className="muted">自动上架只提交商品到 Ozon；库存、条码和活动在这里按店铺配置，每 30 分钟独立检查并处理。</p>
+        </div>
+        <div className="toolbar">
+          <button className="secondary-button" disabled={!props.shop} onClick={props.saveConfig}>保存配置</button>
+          <button className="primary-button" disabled={!props.shop || !enabled} onClick={props.startTask}>启动定时运维</button>
+        </div>
+      </div>
+      <div className="check-grid compact-checks">
+        <label className="check-card">
+          <input type="checkbox" checked={props.autoStock} onChange={(event) => props.setAutoStock(event.target.checked)} />
+          自动补零库存
+        </label>
+        <label className="check-card">
+          <input type="checkbox" checked={props.autoBarcode} onChange={(event) => props.setAutoBarcode(event.target.checked)} />
+          自动生成条码
+        </label>
+        <label className="check-card">
+          <input type="checkbox" checked={props.autoAction} onChange={(event) => props.setAutoAction(event.target.checked)} />
+          自动参加活动
+        </label>
+      </div>
+      <div className="form-grid compact-form-grid">
+        <div className="field">
+          <label>执行间隔（分钟）</label>
+          <input type="number" min={30} max={30} value={LISTING_MAINTENANCE_INTERVAL_MINUTES} disabled onChange={(event) => props.setIntervalMinutes(Number(event.target.value))} />
+        </div>
+        <div className="field">
+          <label>补库存仓库</label>
+          <select value={props.warehouseId} onChange={(event) => props.setWarehouseId(event.target.value ? Number(event.target.value) : "")}>
+            <option value="">未选择，单仓库时自动使用</option>
+            {props.warehouses.map((warehouse) => (
+              <option key={warehouse.warehouseId} value={warehouse.warehouseId}>{warehouse.name} ({warehouse.warehouseId})</option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>补库存数量</label>
+          <input type="number" min={0} value={props.stock} onChange={(event) => props.setStock(Number(event.target.value))} />
+        </div>
+        <div className="field">
+          <label>基础数据</label>
+          <div className="toolbar">
+            <button className="secondary-button" disabled={!props.shop} onClick={props.loadWarehouses}>刷新仓库</button>
+            <button className="secondary-button" disabled={!props.shop} onClick={props.loadCategories}>刷新类目</button>
+            <button className="secondary-button" disabled={!props.shop} onClick={props.loadActions}>加载活动</button>
+          </div>
+        </div>
+      </div>
+      <div className="panel-subsection">
+        <div className="section-title">
+          <span className="step-dot">A</span>
+          <div>
+            <h3>类目活动规则</h3>
+            <p className="muted">参加活动时按类目匹配商品，不同类目可以配置不同活动和价格。</p>
+          </div>
+        </div>
+        <div className="form-grid compact-form-grid">
+          <div className="field">
+            <label>类目搜索</label>
+            <input
+              value={props.categorySearch}
+              onChange={(event) => props.setCategorySearch(event.target.value)}
+              placeholder="输入类目名称或 ID"
+            />
+          </div>
+          <div className="field">
+            <label>商品类目（{visibleCategories.length}/{props.categories.length}）</label>
+            <select value={props.actionCategoryId} onChange={(event) => props.setActionCategoryId(event.target.value ? Number(event.target.value) : "")}>
+              <option value="">选择类目</option>
+              {visibleCategories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name} ({category.descriptionCategoryId ?? category.id})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>活动</label>
+            <select value={props.actionId} onChange={(event) => props.setActionId(event.target.value ? Number(event.target.value) : "")}>
+              <option value="">选择活动</option>
+              {props.actions.map((action) => (
+                <option key={action.id} value={action.id}>{action.title} ({action.id})</option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>活动价格</label>
+            <input value={props.actionPrice} onChange={(event) => props.setActionPrice(event.target.value)} />
+          </div>
+          <div className="field">
+            <label>活动库存</label>
+            <input type="number" min={1} value={props.actionStock} onChange={(event) => props.setActionStock(Number(event.target.value))} />
+          </div>
+          <div className="field">
+            <label>规则操作</label>
+            <button className="secondary-button" type="button" onClick={props.addActionConfig}>添加/更新规则</button>
+          </div>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>类目</th><th>活动</th><th>活动价格</th><th>活动库存</th><th>操作</th></tr></thead>
+            <tbody>
+              {props.actionConfigs.map((config) => (
+                <tr key={`${config.categoryId}:${config.actionId}`}>
+                  <td>{config.categoryName || config.categoryId}</td>
+                  <td>{config.actionTitle || config.actionId}</td>
+                  <td>{config.actionPrice}</td>
+                  <td>{config.actionStock}</td>
+                  <td><button className="secondary-button" onClick={() => props.removeActionConfig(config.categoryId, config.actionId)}>删除</button></td>
+                </tr>
+              ))}
+              {props.actionConfigs.length === 0 ? (
+                <tr><td colSpan={5} className="muted">还没有配置类目活动规则。</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
   );
@@ -2277,7 +3224,7 @@ function FollowSyncPanel(props: {
         {props.autoUpdateStock && unsavedWarehouseShops.length > 0 ? (
           <div className="feedback-panel">
             <strong>仓库未保存</strong>
-            <span>{unsavedWarehouseShops.map((shop) => shop.name).join("、")}：如果 Ozon 后台实际只有一个仓库，会自动使用；多个仓库时请到设置页填写唯一仓库 ID。</span>
+            <span>{unsavedWarehouseShops.map((shop) => shop.name).join("、")}：如果 Ozon 后台实际只有一个仓库，会自动使用；多个仓库时请在编辑店铺中填写唯一仓库 ID。</span>
           </div>
         ) : null}
       </section>
@@ -2468,22 +3415,11 @@ function ProductTemplatePanel(props: {
   setTemplateJson: (value: string) => void;
   templateStatus: string;
   templateProduct: unknown | undefined;
-  previewSku: string;
-  setPreviewSku: (value: string) => void;
-  previewTitle: string;
-  setPreviewTitle: (value: string) => void;
-  previewDescription: string;
-  setPreviewDescription: (value: string) => void;
-  previewImageUrls: string;
-  setPreviewImageUrls: (value: string) => void;
-  previewPayload: string;
-  clearPreviewPayload: () => void;
   fetchOnlineTemplate: () => void;
   applyJsonTemplate: () => void;
   saveCurrentTemplate: () => void;
   deleteCurrentTemplate: () => void;
   clearTemplate: () => void;
-  previewTemplatePayload: () => void;
 }) {
   return (
     <section className="panel">
@@ -2529,51 +3465,172 @@ function ProductTemplatePanel(props: {
           </div>
         </div>
       </div>
-
-      <div className="panel-subsection">
-        <div className="panel-header">
-          <h3>最终 payload 预览</h3>
-          <button className="secondary-button" onClick={props.previewTemplatePayload}>生成预览</button>
-        </div>
-        <div className="form-grid">
-          <div className="field">
-            <label>预览货号</label>
-            <input value={props.previewSku} onChange={(event) => props.setPreviewSku(event.target.value)} />
-          </div>
-          <div className="field">
-            <label>预览标题</label>
-            <input value={props.previewTitle} onChange={(event) => props.setPreviewTitle(event.target.value)} />
-          </div>
-          <div className="field">
-            <label>预览简介</label>
-            <input value={props.previewDescription} onChange={(event) => props.setPreviewDescription(event.target.value)} />
-          </div>
-          <div className="field">
-            <label>预览图片 URL (每行一个)</label>
-            <textarea rows={3} value={props.previewImageUrls} onChange={(event) => props.setPreviewImageUrls(event.target.value)} />
-          </div>
-        </div>
-        {props.previewPayload ? (
-          <LongOutput
-            value={props.previewPayload}
-            emptyText="生成预览后会显示在这里。"
-            maxHeight={180}
-            onClear={props.clearPreviewPayload}
-          />
-        ) : null}
-      </div>
     </section>
   );
 }
 
-function PreflightSection({ issues, onNavigate }: { issues: PreflightIssue[]; onNavigate: (page: "settings" | "jobs") => void }) {
+function ShopEditorDialog(props: {
+  shop?: Shop;
+  shops: Shop[];
+  onClose: () => void;
+  onSaved: (shop: Shop) => Promise<void>;
+  onDeleted: () => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<ShopDraft>(() => shopToDraft(props.shop));
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    setMessage("");
+    try {
+      const saved = await api.saveShop(draft);
+      await props.onSaved(saved);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!props.shop) return;
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      setMessage("再次点击删除店铺确认操作。");
+      return;
+    }
+    setDeleting(true);
+    setMessage("");
+    try {
+      await api.deleteShop(props.shop.id);
+      await props.onDeleted();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={props.onClose}>
+      <section className="modal-panel shop-editor-dialog" role="dialog" aria-modal="true" aria-label={props.shop ? "编辑店铺" : "新增店铺"} onClick={(event) => event.stopPropagation()}>
+        <div className="panel-header">
+          <div>
+            <h2>{props.shop ? "编辑店铺" : "新增店铺"}</h2>
+            <p className="muted">保存后可直接在店铺管理里进入功能中心。</p>
+          </div>
+          <button className="icon-button" onClick={props.onClose} title="关闭">×</button>
+        </div>
+        <div className="form-grid">
+          <div className="field">
+            <label>店铺名称</label>
+            <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+          </div>
+          <div className="field">
+            <label>Client-Id</label>
+            <input value={draft.clientId} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} />
+          </div>
+          <div className="field">
+            <label>Ozon API Key</label>
+            <input type="password" value={draft.apiKey ?? ""} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} placeholder={props.shop?.apiKeyStored ? "已保存，不填则沿用" : ""} />
+          </div>
+          <div className="field">
+            <label>店铺类型</label>
+            <select value={draft.shopRole ?? "main"} onChange={(event) => setDraft({
+              ...draft,
+              shopRole: event.target.value as "main" | "follower",
+              followsShopId: event.target.value === "main" ? "" : draft.followsShopId,
+              followWarehouseId: event.target.value === "main" ? undefined : draft.followWarehouseId,
+            })}>
+              <option value="main">主店</option>
+              <option value="follower">跟卖店铺</option>
+            </select>
+          </div>
+          {(draft.shopRole ?? "main") === "follower" ? (
+            <>
+              <div className="field">
+                <label>跟卖主店</label>
+                <select value={draft.followsShopId ?? ""} onChange={(event) => setDraft({ ...draft, followsShopId: event.target.value })}>
+                  <option value="">选择主店</option>
+                  {props.shops
+                    .filter((shop) => shop.id !== props.shop?.id && (shop.shopRole ?? "main") === "main")
+                    .map((shop) => <option key={shop.id} value={shop.id}>{shop.name}</option>)}
+                </select>
+              </div>
+              <div className="field">
+                <label>跟卖仓库 ID</label>
+                <input
+                  type="number"
+                  value={draft.followWarehouseId ?? ""}
+                  onChange={(event) => setDraft({ ...draft, followWarehouseId: event.target.value ? Number(event.target.value) : undefined })}
+                />
+              </div>
+            </>
+          ) : null}
+          <div className="field">
+            <label>店铺水印图片</label>
+            <PathInput value={draft.watermarkPath ?? ""} onChange={(value) => setDraft({ ...draft, watermarkPath: value })} mode="file" />
+          </div>
+        </div>
+        <div className="check-grid compact-checks">
+          <label className="check-card">
+            <input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />
+            启用店铺
+          </label>
+        </div>
+        {message ? <p className="error-text">{message}</p> : null}
+        <div className="modal-actions">
+          {props.shop ? <button className="danger-button" onClick={remove} disabled={saving || deleting}>{confirmDelete ? "确认删除" : "删除店铺"}</button> : null}
+          <button className="secondary-button" onClick={props.onClose}>取消</button>
+          <button className="primary-button" onClick={save} disabled={saving || deleting}>{saving ? "保存中" : "保存店铺"}</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function shopToDraft(shop?: Shop): ShopDraft {
+  return {
+    id: shop?.id,
+    name: shop?.name ?? "",
+    clientId: shop?.clientId ?? "",
+    apiKey: "",
+    ossAccessKeyId: shop?.ossAccessKeyId ?? "",
+    ossAccessKeySecret: "",
+    ossBucket: shop?.ossBucket ?? "",
+    ossEndpoint: shop?.ossEndpoint ?? "",
+    ossPublicDomain: shop?.ossPublicDomain ?? "",
+    watermarkPath: shop?.watermarkPath ?? "",
+    shopRole: shop?.shopRole ?? "main",
+    followsShopId: shop?.followsShopId ?? "",
+    followWarehouseId: shop?.followWarehouseId,
+    maintenanceWarehouseId: shop?.maintenanceWarehouseId,
+    maintenanceStock: shop?.maintenanceStock ?? 50,
+    maintenanceStockEnabled: shop?.maintenanceStockEnabled ?? true,
+    maintenanceBarcodeEnabled: shop?.maintenanceBarcodeEnabled ?? true,
+    maintenanceActionEnabled: (shop?.maintenanceActionEnabled ?? true) || (shop?.maintenanceActionConfigs ?? []).length > 0,
+    maintenanceIntervalMinutes: shop?.maintenanceIntervalMinutes ?? 5,
+    maintenanceActionConfigs: shop?.maintenanceActionConfigs ?? [],
+    enabled: shop?.enabled ?? true,
+  };
+}
+
+function normalizeSavedTab(tab: unknown): TabKey {
+  return typeof tab === "string" && TASK_TABS.some((item) => item.key === tab) ? tab as TabKey : "upload";
+}
+
+function PreflightSection({ issues, onNavigate }: { issues: PreflightIssue[]; onNavigate: (page: "ozon" | "jobs") => void }) {
   return (
     <section className="panel">
       <div className="panel-header">
         <h2>开始前预检查</h2>
       </div>
       <PreflightPanel issues={issues} onAction={(target) => {
-        if (target === "settings" || target === "jobs") onNavigate(target);
+        if (target === "settings" || target === "ozon") onNavigate("ozon");
+        if (target === "jobs") onNavigate("jobs");
       }} />
     </section>
   );
@@ -2607,9 +3664,27 @@ function extractAttributes(attributes: unknown, product: unknown): unknown[] {
   return [];
 }
 
+function readCurrentTemplatePayload(templateProduct: unknown | undefined, templateJson: string) {
+  if (templateJson.trim()) {
+    try {
+      return JSON.parse(templateJson);
+    } catch {
+      throw new Error("JSON 模板格式不正确，请先修正后再保存");
+    }
+  }
+  if (templateProduct) return templateProduct;
+  throw new Error("请先读取线上模板，或粘贴 JSON 后再保存");
+}
+
 function friendlyError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/^Error:\s*/i, "").trim() || "操作失败，请查看接口结果。";
+  return raw.replace(/^Error:\s*/i, "").trim() || "操作失败，请查看页面提示。";
+}
+
+function responseNumber(value: unknown, key: string): number | undefined {
+  if (!isRecord(value)) return undefined;
+  const raw = value[key];
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
 }
 
 function formatDateTime(value: string | undefined): string {
@@ -2665,6 +3740,25 @@ function parseActionProducts(value: unknown): ActionProductRow[] {
       raw: record,
     };
   });
+}
+
+function lightweightActionProductRow(row: ActionProductRow): ActionProductRow {
+  return {
+    productId: row.productId,
+    offerId: row.offerId,
+    name: row.name,
+    primaryImage: row.primaryImage,
+    productUrl: row.productUrl,
+    price: row.price,
+    currencyCode: row.currencyCode,
+    actionPrice: row.actionPrice,
+    stock: row.stock,
+    discount: row.discount,
+    maxActionPrice: row.maxActionPrice,
+    minActionPrice: row.minActionPrice,
+    status: row.status,
+    raw: {},
+  };
 }
 
 async function enrichActionProducts(shopId: string, rows: ActionProductRow[]): Promise<ActionProductRow[]> {
@@ -3028,7 +4122,9 @@ function InventoryTable(props: {
   newOldPrice: string;
   currencyCode: string;
   setResult: (value: string) => void;
+  setFeedback: (value: OperationFeedback | null) => void;
 }) {
+  const [operationRunning, setOperationRunning] = useState<"stock" | "price" | "barcode" | null>(null);
   const operationProducts = selectInventoryProducts(props.products, props.selectedProductIds);
   const productIds = operationProducts.map((row) => row.productId).filter((id): id is number => typeof id === "number");
   const totalPages = Math.max(1, Math.ceil(props.products.length / Math.max(1, props.pageSize)));
@@ -3048,6 +4144,23 @@ function InventoryTable(props: {
     }
     props.setSelectedProductIds(props.selectedProductIds.filter((id) => !pageProductIds.includes(id)));
   };
+  const runInventoryOperation = async (
+    key: "stock" | "price" | "barcode",
+    action: () => Promise<string>,
+  ) => {
+    setOperationRunning(key);
+    props.setFeedback({ tone: "running", message: "正在提交到 Ozon，请稍等..." });
+    try {
+      const message = await action();
+      props.setFeedback({ tone: "success", message });
+    } catch (error) {
+      const message = friendlyError(error);
+      props.setFeedback({ tone: "error", message });
+      props.setResult(message);
+    } finally {
+      setOperationRunning(null);
+    }
+  };
   const updateStocks = async () => {
     if (!props.shopId) throw new Error("请先选择店铺");
     if (!props.warehouseId) throw new Error("请先选择仓库");
@@ -3062,6 +4175,7 @@ function InventoryTable(props: {
       results.push({ batch: index + 1, count: chunk.length, data });
     }
     props.setResult(JSON.stringify({ batches: results.length, total: stocks.length, results }, null, 2));
+    return `库存更新已提交：${stocks.length} 个商品，库存更新为 ${props.stockValue}，仓库 ${props.warehouseId}，共 ${results.length} 个批次。`;
   };
   const updatePrices = async () => {
     if (!props.shopId) throw new Error("请先选择店铺");
@@ -3082,6 +4196,7 @@ function InventoryTable(props: {
       results.push({ batch: index + 1, count: chunk.length, data });
     }
     props.setResult(JSON.stringify({ batches: results.length, total: prices.length, results }, null, 2));
+    return `价格更新已提交：${prices.length} 个商品，售价更新为 ${props.newPrice.trim()}${props.newOldPrice.trim() ? `，划线价更新为 ${props.newOldPrice.trim()}` : ""}，共 ${results.length} 个批次。`;
   };
   const generateBarcodes = async () => {
     if (!props.shopId) throw new Error("请先选择店铺");
@@ -3091,6 +4206,7 @@ function InventoryTable(props: {
       results.push({ batch: index + 1, count: chunk.length, data });
     }
     props.setResult(JSON.stringify({ batches: results.length, total: productIds.length, results }, null, 2));
+    return `条码生成已提交：${productIds.length} 个商品，共 ${results.length} 个批次。`;
   };
 
   return (
@@ -3099,22 +4215,22 @@ function InventoryTable(props: {
         <div className="operation-card">
           <strong>{props.selectedProductIds.length > 0 ? "所选商品更新库存" : "当前列表更新库存"}</strong>
           <span>有勾选时仅处理勾选商品；未勾选时处理当前列表全部商品。</span>
-          <button className="primary-button" disabled={productIds.length === 0} onClick={() => updateStocks().catch((error) => props.setResult(String(error)))}>
-            更新列表库存
+          <button className="primary-button" disabled={productIds.length === 0 || operationRunning !== null} onClick={() => runInventoryOperation("stock", updateStocks)}>
+            {operationRunning === "stock" ? "提交中" : "更新列表库存"}
           </button>
         </div>
         <div className="operation-card">
           <strong>{props.selectedProductIds.length > 0 ? "所选商品更新价格" : "当前列表更新价格"}</strong>
           <span>有勾选时仅处理勾选商品；未勾选时处理当前列表全部商品。</span>
-          <button className="primary-button" disabled={operationProducts.length === 0} onClick={() => updatePrices().catch((error) => props.setResult(String(error)))}>
-            更新列表价格
+          <button className="primary-button" disabled={operationProducts.length === 0 || operationRunning !== null} onClick={() => runInventoryOperation("price", updatePrices)}>
+            {operationRunning === "price" ? "提交中" : "更新列表价格"}
           </button>
         </div>
         <div className="operation-card">
           <strong>生成条码</strong>
           <span>有勾选时仅处理勾选商品；未勾选时处理当前列表全部商品。</span>
-          <button className="secondary-button" disabled={productIds.length === 0} onClick={() => generateBarcodes().catch((error) => props.setResult(String(error)))}>
-            生成条码
+          <button className="secondary-button" disabled={productIds.length === 0 || operationRunning !== null} onClick={() => runInventoryOperation("barcode", generateBarcodes)}>
+            {operationRunning === "barcode" ? "提交中" : "生成条码"}
           </button>
         </div>
       </div>

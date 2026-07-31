@@ -1,28 +1,47 @@
-import { useEffect, useState } from "react";
-import { FolderOpen } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Copy, FolderOpen } from "lucide-react";
 import type { JobLog, JobSummary } from "@shared/types";
 import { api } from "../../lib/api";
+import { createCloudClient, getCloudToken } from "../../lib/cloudApi";
 import { formatDate, jobKindText, statusText } from "../../lib/format";
-import { LongOutput } from "../../lib/LongOutput";
+
+const TASK_HISTORY_SYNC_DEBOUNCE_MS = import.meta.env.MODE === "test" ? 0 : 10_000;
 
 interface Props {
   jobs: JobSummary[];
   selectedJobId?: string;
+  cloudApiBaseUrl?: string;
   onChanged: () => void;
 }
 
-export function JobsPage({ jobs, selectedJobId, onChanged }: Props) {
+export function JobsPage({ jobs, selectedJobId, cloudApiBaseUrl, onChanged }: Props) {
   const [logs, setLogs] = useState<JobLog[]>([]);
   const [selectedJob, setSelectedJob] = useState<string>(selectedJobId || "");
   const [loadedLogJob, setLoadedLogJob] = useState("");
+  const [jobPage, setJobPage] = useState(1);
   const [logPage, setLogPage] = useState(1);
   const [logPageSize, setLogPageSize] = useState(10);
+  const [copyStatus, setCopyStatus] = useState("");
+  const [cloudSyncStatus, setCloudSyncStatus] = useState("");
+  const lastCloudSyncSignature = useRef("");
+  const cloudSyncTimer = useRef<number | undefined>(undefined);
+  const latestLogRequestRef = useRef(0);
+
+  const loadLogs = async (jobId: string, resetPage = false) => {
+    const requestId = latestLogRequestRef.current + 1;
+    latestLogRequestRef.current = requestId;
+    const nextLogs = await api.listJobLogs(jobId);
+    if (requestId !== latestLogRequestRef.current) return;
+    setLogs(nextLogs);
+    if (resetPage) {
+      setLogPage(1);
+    }
+  };
 
   const openLogs = async (jobId: string) => {
     setSelectedJob(jobId);
     setLoadedLogJob(jobId);
-    setLogs(await api.listJobLogs(jobId));
-    setLogPage(1);
+    await loadLogs(jobId, true);
   };
 
   useEffect(() => {
@@ -45,15 +64,80 @@ export function JobsPage({ jobs, selectedJobId, onChanged }: Props) {
       return undefined;
     }
     const timer = window.setInterval(() => {
-      api.listJobLogs(selectedJob).then(setLogs).catch(() => undefined);
+      loadLogs(selectedJob).catch(() => undefined);
     }, 1000);
     return () => window.clearInterval(timer);
   }, [selectedJob]);
+
+  useEffect(() => {
+    if (jobs.length === 0 || !getCloudToken()) {
+      return;
+    }
+    const recentJobs = jobs.slice(0, 200);
+    const recentLogs = logs.slice(-200);
+    const syncSignature = JSON.stringify({
+      jobs: recentJobs.map((job) => ({
+        id: job.id,
+        status: job.status,
+        progress: job.progress,
+        updatedAt: job.updatedAt,
+        successCount: job.successCount,
+        failedCount: job.failedCount,
+        lastError: job.lastError,
+        error: job.error,
+      })),
+      logs: recentLogs.map((log) => ({
+        id: log.id,
+        level: log.level,
+        message: log.message,
+        createdAt: log.createdAt,
+      })),
+    });
+    if (syncSignature === lastCloudSyncSignature.current) {
+      return;
+    }
+    lastCloudSyncSignature.current = syncSignature;
+    if (cloudSyncTimer.current) {
+      window.clearTimeout(cloudSyncTimer.current);
+    }
+    cloudSyncTimer.current = window.setTimeout(() => {
+      const client = createCloudClient(cloudApiBaseUrl || "https://api.dyxtoolai.cn");
+      client.syncTaskHistory({ jobs: recentJobs, logs: recentLogs })
+        .then((result) => setCloudSyncStatus(`已同步到云端：${result.jobsSynced} 个任务 / ${result.logsSynced} 条日志`))
+        .catch((error) => setCloudSyncStatus(`云端同步暂未完成，稍后会自动重试：${readableError(error)}`));
+    }, TASK_HISTORY_SYNC_DEBOUNCE_MS);
+    return () => {
+      if (cloudSyncTimer.current) {
+        window.clearTimeout(cloudSyncTimer.current);
+      }
+    };
+  }, [cloudApiBaseUrl, jobs, logs]);
 
   const totalLogPages = Math.max(1, Math.ceil(logs.length / Math.max(1, logPageSize)));
   const currentLogPage = Math.min(logPage, totalLogPages);
   const pagedLogs = logs.slice((currentLogPage - 1) * logPageSize, currentLogPage * logPageSize);
   const logText = pagedLogs.map((log) => `[${formatDate(log.createdAt)}] ${log.level.toUpperCase()} ${log.message}`).join("\n");
+  const selectedJobSummary = jobs.find((job) => job.id === selectedJob);
+  const jobPageSize = 10;
+  const totalJobPages = Math.max(1, Math.ceil(jobs.length / jobPageSize));
+  const currentJobPage = Math.min(jobPage, totalJobPages);
+  const pagedJobs = jobs.slice((currentJobPage - 1) * jobPageSize, currentJobPage * jobPageSize);
+
+  useEffect(() => {
+    if (jobPage > totalJobPages) {
+      setJobPage(totalJobPages);
+    }
+  }, [jobPage, totalJobPages]);
+
+  const copyLogs = async () => {
+    if (!logText.trim()) return;
+    try {
+      await navigator.clipboard?.writeText(logText);
+      setCopyStatus("已复制");
+    } catch {
+      setCopyStatus("复制失败");
+    }
+  };
 
   return (
     <div className="content-grid">
@@ -78,7 +162,7 @@ export function JobsPage({ jobs, selectedJobId, onChanged }: Props) {
               </tr>
             </thead>
             <tbody>
-              {jobs.map((job) => {
+              {pagedJobs.map((job) => {
                 const resultPath = job.resultExcelPath || job.resultPath || job.outputPath;
                 return (
                   <tr key={job.id} className={selectedJob === job.id ? "selected-row" : ""}>
@@ -129,6 +213,15 @@ export function JobsPage({ jobs, selectedJobId, onChanged }: Props) {
             </tbody>
           </table>
         </div>
+        {totalJobPages > 1 ? (
+          <div className="pagination-bar">
+            <button className="secondary-button" disabled={currentJobPage <= 1} onClick={() => setJobPage(1)}>首页</button>
+            <button className="secondary-button" disabled={currentJobPage <= 1} onClick={() => setJobPage(currentJobPage - 1)}>上一页</button>
+            <span>第 {currentJobPage} / {totalJobPages} 页，每页 10 个任务</span>
+            <button className="secondary-button" disabled={currentJobPage >= totalJobPages} onClick={() => setJobPage(currentJobPage + 1)}>下一页</button>
+            <button className="secondary-button" disabled={currentJobPage >= totalJobPages} onClick={() => setJobPage(totalJobPages)}>末页</button>
+          </div>
+        ) : null}
       </section>
 
       <section className="panel">
@@ -136,20 +229,47 @@ export function JobsPage({ jobs, selectedJobId, onChanged }: Props) {
           <h2>运行日志</h2>
           <div className="toolbar">
             <span className="muted">{selectedJob || "未选择任务"} · 共 {logs.length} 条 · 第 {currentLogPage}/{totalLogPages} 页</span>
+            {cloudSyncStatus ? <span className="muted">{cloudSyncStatus}</span> : null}
+            {copyStatus ? <span className="muted">{copyStatus}</span> : null}
             <select value={logPageSize} onChange={(event) => {
               setLogPageSize(Number(event.target.value));
               setLogPage(1);
             }}>
               {[10, 20, 50, 100].map((size) => <option key={size} value={size}>{size} 条/页</option>)}
             </select>
+            <button className="secondary-button" disabled={!logText.trim()} onClick={copyLogs}>
+              <Copy size={15} /> 复制
+            </button>
             <button className="secondary-button" disabled={currentLogPage <= 1} onClick={() => setLogPage(1)}>首页</button>
             <button className="secondary-button" disabled={currentLogPage <= 1} onClick={() => setLogPage(currentLogPage - 1)}>上一页</button>
             <button className="secondary-button" disabled={currentLogPage >= totalLogPages} onClick={() => setLogPage(currentLogPage + 1)}>下一页</button>
             <button className="secondary-button" disabled={currentLogPage >= totalLogPages} onClick={() => setLogPage(totalLogPages)}>末页</button>
           </div>
         </div>
-        <LongOutput value={logText} emptyText="选择任务后查看日志。" maxHeight={160} />
+        {selectedJobSummary ? (
+          <div className="log-summary-row">
+            <span className="badge neutral">{jobKindText(selectedJobSummary.kind)}</span>
+            <span className="badge neutral">{statusText(selectedJobSummary.status)}</span>
+            <span className="muted">{selectedJobSummary.title}</span>
+          </div>
+        ) : null}
+        <div className="log-list">
+          {pagedLogs.map((log) => (
+            <article className={`log-entry log-entry-${log.level}`} key={log.id}>
+              <div className="log-entry-meta">
+                <span className="log-entry-time">{formatDate(log.createdAt)}</span>
+                <span className="log-entry-level">{log.level.toUpperCase()}</span>
+              </div>
+              <p>{log.message}</p>
+            </article>
+          ))}
+          {pagedLogs.length === 0 ? <div className="log-empty">选择任务后查看日志。</div> : null}
+        </div>
       </section>
     </div>
   );
+}
+
+function readableError(error: unknown) {
+  return (error instanceof Error ? error.message : String(error)).replace(/^Error:\s*/, "");
 }

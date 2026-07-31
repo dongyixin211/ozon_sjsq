@@ -3,11 +3,6 @@ import type { AppSettings, ProviderSecretStatus, Shop, ShopDraft } from "@shared
 import { api } from "../../lib/api";
 import { PathInput } from "../../lib/PathInput";
 
-const OLLAMA_BASE_URL = "http://localhost:11434/v1";
-const OLLAMA_DEFAULT_MODEL = "qwen3.5:9b";
-const PIXEL_BASE_URL = "https://ai-pixel.online/v1";
-const PIXEL_DEFAULT_MODEL = "gpt-4o-mini";
-
 interface Props {
   settings: AppSettings;
   shops: Shop[];
@@ -15,11 +10,9 @@ interface Props {
   onChanged: () => void;
 }
 
-export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Props) {
+export function SettingsPage({ settings, shops, onChanged }: Props) {
   const [localSettings, setLocalSettings] = useState(settings);
-  const [section, setSection] = useState<"shop" | "oss" | "ai" | "dirs">("shop");
-  const [imageApiKey, setImageApiKey] = useState("");
-  const [textApiKey, setTextApiKey] = useState("");
+  const [section, setSection] = useState<"shop" | "cloud" | "oss" | "dirs">("shop");
   const [shopDraft, setShopDraft] = useState<ShopDraft>({
     name: "",
     clientId: "",
@@ -36,7 +29,6 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
     enabled: true,
   });
   const [message, setMessage] = useState("");
-  const textProviderIsOllama = localSettings.textProvider.trim().toLowerCase() === "ollama";
 
   useEffect(() => setLocalSettings(settings), [settings]);
 
@@ -73,44 +65,6 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
     }
   };
 
-  const saveProviderSecrets = async () => {
-    await api.saveProviderSecrets(localSettings, {
-      imageApiKey,
-      textApiKey,
-    });
-    setImageApiKey("");
-    setTextApiKey("");
-    onChanged();
-    setMessage("AI Provider 密钥已保存到系统密钥库。");
-  };
-
-  const useOllamaForTitles = () => {
-    setLocalSettings((current) => ({
-      ...current,
-      textProvider: "ollama",
-      textBaseUrl: OLLAMA_BASE_URL,
-      textModel: current.textProvider.trim().toLowerCase() === "ollama" && current.textModel.trim()
-        ? current.textModel
-        : OLLAMA_DEFAULT_MODEL,
-      generateCopy: true,
-    }));
-    setMessage("已切换文案 Provider 为本地 Ollama，保存设置后生效。");
-  };
-
-  const usePixelForTitles = () => {
-    setLocalSettings((current) => ({
-      ...current,
-      textProvider: "pixel",
-      textBaseUrl: PIXEL_BASE_URL,
-      textModel:
-        current.textProvider.trim().toLowerCase() === "pixel" && current.textModel.trim()
-          ? current.textModel
-          : PIXEL_DEFAULT_MODEL,
-      generateCopy: true,
-    }));
-    setMessage("已切换文案 Provider 为 Pixel 中转，保存设置后生效。");
-  };
-
   return (
     <div className="content-grid">
       {message ? <section className="panel"><span className="badge">{message}</span></section> : null}
@@ -119,16 +73,36 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
         <div className="tabs">
           {[
             ["shop", "店铺与 Ozon"],
+            ["cloud", "云服务"],
             ["oss", "OSS 上传"],
-            ["ai", "AI Provider"],
             ["dirs", "默认目录"],
           ].map(([key, label]) => (
-            <button key={key} className={section === key ? "tab active" : "tab"} onClick={() => setSection(key as "shop" | "oss" | "ai" | "dirs")}>
+            <button key={key} className={section === key ? "tab active" : "tab"} onClick={() => setSection(key as "shop" | "cloud" | "oss" | "dirs")}>
               {label}
             </button>
           ))}
         </div>
       </section>
+
+      {section === "cloud" ? <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>云服务</h2>
+            <p className="muted">用于会员登录、云端图库和设备授权。这里填写你的云后端地址，不填写 R2 密钥。</p>
+          </div>
+          <button className="primary-button" onClick={saveSettings}>保存设置</button>
+        </div>
+        <div className="form-grid">
+          <div className="field">
+            <label>云后端 API 地址</label>
+            <input
+              value={localSettings.cloudApiBaseUrl}
+              onChange={(event) => setLocalSettings({ ...localSettings, cloudApiBaseUrl: event.target.value })}
+              placeholder="https://api.dyxtoolai.cn"
+            />
+          </div>
+        </div>
+      </section> : null}
 
       {/* 店铺配置 */}
       {section === "shop" ? <section className="panel">
@@ -372,152 +346,6 @@ export function SettingsPage({ settings, shops, providerSecrets, onChanged }: Pr
         </div>
       </section> : null}
 
-      {/* AI Provider 设置 */}
-      {section === "ai" ? <section className="panel">
-        <div className="panel-header">
-          <h2>AI Provider 设置</h2>
-          <div className="toolbar">
-            <button className="secondary-button" onClick={usePixelForTitles}>使用 Pixel 标题</button>
-            <button className="secondary-button" onClick={useOllamaForTitles}>使用 Ollama 标题</button>
-            <button className="primary-button" onClick={saveSettings}>保存设置</button>
-          </div>
-        </div>
-        <div className="form-grid">
-          <div className="field">
-            <label>图片 Provider</label>
-            <input value={localSettings.imageProvider} onChange={(event) => setLocalSettings({ ...localSettings, imageProvider: event.target.value })} />
-          </div>
-          <div className="field">
-            <label>文案 Provider</label>
-            <input value={localSettings.textProvider} onChange={(event) => setLocalSettings({ ...localSettings, textProvider: event.target.value })} />
-          </div>
-          <div className="field">
-            <label>图片接口</label>
-            <input value={localSettings.imageBaseUrl} onChange={(event) => setLocalSettings({ ...localSettings, imageBaseUrl: event.target.value })} />
-          </div>
-          <div className="field">
-            <label>文案接口</label>
-            <input value={localSettings.textBaseUrl} onChange={(event) => setLocalSettings({ ...localSettings, textBaseUrl: event.target.value })} />
-          </div>
-          <div className="field">
-            <label>图片模型</label>
-            <input value={localSettings.imageModel} onChange={(event) => setLocalSettings({ ...localSettings, imageModel: event.target.value })} />
-          </div>
-          <div className="field">
-            <label>文案模型</label>
-            <input value={localSettings.textModel} onChange={(event) => setLocalSettings({ ...localSettings, textModel: event.target.value })} />
-          </div>
-          <div className="field">
-            <label>图片质量</label>
-            <select value={localSettings.quality} onChange={(e) => setLocalSettings({ ...localSettings, quality: e.target.value })}>
-              <option value="standard">标准</option>
-              <option value="high">高清</option>
-            </select>
-          </div>
-          <div className="field">
-            <label>并发数</label>
-            <input type="number" min={1} max={16} value={localSettings.maxWorkers} onChange={(event) => setLocalSettings({ ...localSettings, maxWorkers: Number(event.target.value) })} />
-          </div>
-          <div className="field">
-            <label>最大文件夹数 (0=无限制)</label>
-            <input type="number" min={0} value={localSettings.maxFolders} onChange={(event) => setLocalSettings({ ...localSettings, maxFolders: Number(event.target.value) })} />
-          </div>
-          <div className="field">
-            <label>
-              <input type="checkbox" checked={localSettings.convertOriginals} onChange={(e) => setLocalSettings({ ...localSettings, convertOriginals: e.target.checked })} />
-              {" "}转换原图 (3:4)
-            </label>
-          </div>
-          <div className="field">
-            <label>
-              <input type="checkbox" checked={localSettings.generateCopy} onChange={(e) => setLocalSettings({ ...localSettings, generateCopy: e.target.checked })} />
-              {" "}生成文案
-            </label>
-          </div>
-          <div className="field">
-            <label>
-              <input type="checkbox" checked={localSettings.exportExcel} onChange={(e) => setLocalSettings({ ...localSettings, exportExcel: e.target.checked })} />
-              {" "}导出 Excel
-            </label>
-          </div>
-        </div>
-      </section> : null}
-
-      {/* AI Provider 密钥 */}
-      {section === "ai" ? <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>AI Provider 密钥</h2>
-            <p className="muted">
-              图片 Key：{providerSecrets.imageApiKeyStored ? "已保存" : "未保存"}；
-              文案 Key：{textProviderIsOllama ? "Ollama 无需保存" : providerSecrets.textApiKeyStored ? "已保存" : "未保存"}
-            </p>
-          </div>
-          <button className="primary-button" onClick={saveProviderSecrets}>保存密钥</button>
-        </div>
-        <div className="form-grid">
-          <div className="field">
-            <label>图片 API Key</label>
-            <input type="password" value={imageApiKey} onChange={(event) => setImageApiKey(event.target.value)} />
-          </div>
-          <div className="field">
-            <label>文案 API Key</label>
-            <input
-              type="password"
-              value={textApiKey}
-              onChange={(event) => setTextApiKey(event.target.value)}
-              disabled={textProviderIsOllama}
-              placeholder={textProviderIsOllama ? "Ollama 无需 API Key" : ""}
-            />
-          </div>
-        </div>
-        <div className="toolbar" style={{ marginTop: 8 }}>
-          <button className="secondary-button" onClick={async () => {
-            const issues = await api.preflightMaterials({
-              sourceRoot: localSettings.defaultSourceRoot,
-              portraitRoot: localSettings.defaultOutputRoot,
-              contentRoot: localSettings.contentRoot,
-              watermarkPath: localSettings.watermarkPath,
-              imageBaseUrl: localSettings.imageBaseUrl,
-              textBaseUrl: localSettings.textBaseUrl,
-              imageProvider: localSettings.imageProvider,
-              textProvider: localSettings.textProvider,
-              imageModel: localSettings.imageModel,
-              textModel: localSettings.textModel,
-              imagePromptTemplate: localSettings.imagePromptTemplate,
-              titlePromptTemplate: localSettings.titlePromptTemplate,
-              descriptionPromptTemplate: localSettings.descriptionPromptTemplate,
-              generateAiImages: false,
-              convertOriginals: false,
-              generateCopy: true,
-              exportExcel: false,
-            });
-            setMessage(issues.some((issue) => issue.level === "error") ? issues.map((issue) => issue.message).join("；") : "文案 Key 状态正常。");
-          }}>测试文案</button>
-          <button className="secondary-button" onClick={async () => {
-            const issues = await api.preflightMaterials({
-              sourceRoot: localSettings.defaultSourceRoot,
-              portraitRoot: localSettings.defaultOutputRoot,
-              contentRoot: localSettings.contentRoot,
-              watermarkPath: localSettings.watermarkPath,
-              imageBaseUrl: localSettings.imageBaseUrl,
-              textBaseUrl: localSettings.textBaseUrl,
-              imageProvider: localSettings.imageProvider,
-              textProvider: localSettings.textProvider,
-              imageModel: localSettings.imageModel,
-              textModel: localSettings.textModel,
-              imagePromptTemplate: localSettings.imagePromptTemplate,
-              titlePromptTemplate: localSettings.titlePromptTemplate,
-              descriptionPromptTemplate: localSettings.descriptionPromptTemplate,
-              generateAiImages: true,
-              convertOriginals: false,
-              generateCopy: false,
-              exportExcel: false,
-            });
-            setMessage(issues.some((issue) => issue.level === "error") ? issues.map((issue) => issue.message).join("；") : "图片 Key 状态正常。");
-          }}>测试图片</button>
-        </div>
-      </section> : null}
     </div>
   );
 }

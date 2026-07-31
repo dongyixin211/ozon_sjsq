@@ -1,0 +1,52 @@
+{
+  "name": "ozon-sjsq-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json && node scripts/copy-public.mjs",
+    "start": "node dist/index.js",
+    "migrate": "tsx scripts/migrate.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "perf:scan": "tsx scripts/perf-scan.ts",
+    "perf:gallery": "tsx scripts/load-gallery-list.ts",
+    "perf:direct-upload": "tsx scripts/direct-upload-smoke.ts",
+    "gallery:thumbs": "tsx scripts/backfill-gallery-thumbnails.ts",
+    "gallery:featured": "tsx scripts/refresh-featured-gallery.ts",
+    "listing:quota:audit": "tsx scripts/audit-listing-quota.ts",
+    "listing:auto:smoke": "tsx scripts/auto-listing-consistency-smoke.ts",
+    "storage:migrate": "tsx scripts/migrate-gallery-to-object-storage.ts",
+    "storage:sync-local": "tsx scripts/sync-local-uploads-to-object-storage.ts",
+    "uploads:cleanup": "tsx scripts/cleanup-local-uploads.ts",
+    "uploads:cleanup:status": "tsx scripts/cleanup-local-uploads.ts --status",
+    "keys:create": "tsx scripts/create-license-keys.ts",
+    "doctor": "tsx scripts/doctor.ts",
+    "env:init": "tsx scripts/init-env.ts",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.614.0",
+    "@aws-sdk/s3-request-presigner": "^3.1086.0",
+    "@fastify/cors": "^9.0.1",
+    "@fastify/multipart": "^8.3.0",
+    "@fastify/static": "^7.0.4",
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "ioredis": "^5.11.1",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.12.0",
+    "sharp": "^0.33.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/node": "^22.5.0",
+    "@types/pg": "^8.11.6",
+    "tsx": "^4.16.5",
+    "typescript": "^5.6.3"
+  }
+}

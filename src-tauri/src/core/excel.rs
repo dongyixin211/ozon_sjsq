@@ -143,6 +143,63 @@ pub fn read_content_rows(path: &Path) -> Result<Vec<ContentRow>> {
     Ok(result)
 }
 
+pub fn read_sku_rows(path: &Path) -> Result<Vec<ContentRow>> {
+    let mut workbook = open_workbook_auto(path)?;
+    let sheet_name = workbook
+        .sheet_names()
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Excel 文件没有工作表"))?;
+    let range = workbook.worksheet_range(&sheet_name)?;
+    let mut rows = range.rows();
+    let headers = rows
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Excel 缺少表头"))?
+        .iter()
+        .map(cell_text)
+        .collect::<Vec<_>>();
+
+    let sku_idx = header_index(&headers, &["货号", "sku", "offer_id"])?;
+    let title_idx = optional_header_index(&headers, &["标题", "title", "name"]);
+    let product_color_idx = optional_header_index(&headers, &["商品颜色", "颜色", "product_color"]);
+    let color_name_idx = optional_header_index(
+        &headers,
+        &[
+            "颜色名称(俄语)",
+            "颜色名称",
+            "俄语颜色",
+            "color_name",
+            "color_name_ru",
+        ],
+    );
+    let desc_idx = optional_header_index(&headers, &["简介", "描述", "description"]);
+    let rich_idx = optional_header_index(
+        &headers,
+        &["json富文本内容", "json富内容", "富文本json", "rich_json"],
+    );
+
+    let mut result = Vec::new();
+    for row in rows {
+        let sku = cell_at(row, sku_idx);
+        if sku.is_empty() {
+            continue;
+        }
+        result.push(ContentRow {
+            sku,
+            title: title_idx.map(|idx| cell_at(row, idx)).unwrap_or_default(),
+            product_color: product_color_idx
+                .map(|idx| cell_at(row, idx))
+                .unwrap_or_default(),
+            color_name: color_name_idx
+                .map(|idx| cell_at(row, idx))
+                .unwrap_or_default(),
+            description: desc_idx.map(|idx| cell_at(row, idx)).unwrap_or_default(),
+            rich_json: rich_idx.map(|idx| cell_at(row, idx)).unwrap_or_default(),
+        });
+    }
+    Ok(result)
+}
+
 pub fn write_batch_results(path: &Path, rows: &[BatchResultRow]) -> Result<()> {
     let mut workbook = Workbook::new();
     let header_format = Format::new()

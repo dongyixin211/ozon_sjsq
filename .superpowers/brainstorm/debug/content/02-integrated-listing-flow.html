@@ -1,0 +1,48 @@
+﻿<style>
+  .top { background:linear-gradient(135deg,#172033,#315fba); color:white; border-radius:22px; padding:26px; margin-bottom:18px; }
+  .top h1{margin:6px 0 8px;font-size:28px}.top p{margin:0;opacity:.82}
+  .layout{display:grid;grid-template-columns:280px 1fr;gap:18px}.card{background:#fff;border:1px solid #e3e8f0;border-radius:18px;padding:18px;box-shadow:0 8px 25px rgba(31,55,95,.06)}
+  .nav-step{display:flex;gap:12px;padding:13px;border-radius:13px;margin-bottom:8px;align-items:center}.nav-step.active{background:#edf3ff;color:#244fae}.num{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:#e9edf4;font-weight:700}.active .num{background:#315fba;color:#fff}
+  .section-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.section-title h2{margin:0;font-size:19px}.status{padding:5px 9px;border-radius:99px;background:#eaf8ef;color:#177245;font-size:12px}
+  .fields{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.field{border:1px solid #e1e6ee;border-radius:13px;padding:12px}.field span{display:block;color:#778196;font-size:12px;margin-bottom:5px}.field strong{font-size:15px}
+  .mapping{display:grid;grid-template-columns:1fr 36px 1fr 36px 1fr;gap:8px;align-items:center;margin:18px 0}.mapbox{padding:15px;border-radius:13px;background:#f4f7fb;text-align:center;font-weight:700}.arrow{text-align:center;color:#8b95a7}
+  .shop-row{display:grid;grid-template-columns:1fr 100px 120px 90px;gap:10px;align-items:center;border-top:1px solid #eef1f5;padding:12px 0}.shop-row:first-of-type{border-top:0}.quota{font-size:12px;color:#667085}.on{color:#177245}.buttons{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}.btn{padding:10px 15px;border-radius:11px;border:1px solid #cad3e1;background:#fff}.btn.primary{background:#315fba;color:#fff;border-color:#315fba}
+  .pipeline{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0 18px}.pipe{padding:13px;background:#f5f7fb;border-radius:13px}.pipe strong{display:block;font-size:20px;margin-top:5px}.pipe.running{background:#edf3ff;color:#244fae}
+  .batch{border:1px solid #e3e8f0;border-radius:15px;padding:14px;margin-top:10px}.batch-head{display:grid;grid-template-columns:1fr 120px 90px 100px;gap:10px;align-items:center}.progress{height:7px;background:#e7ebf2;border-radius:99px;overflow:hidden;margin-top:10px}.progress span{display:block;height:100%;background:#3c69d5}.batch-actions{display:flex;gap:8px;margin-top:10px}.mini{font-size:12px;padding:7px 10px;border:1px solid #d5dce8;border-radius:9px;background:#fff}.note{padding:12px;background:#fff7e7;color:#8a5809;border-radius:12px;margin-top:14px}
+  @media(max-width:950px){.layout{grid-template-columns:1fr}.fields{grid-template-columns:1fr}.mapping{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}.pipeline{grid-template-columns:1fr 1fr}.shop-row,.batch-head{grid-template-columns:1fr}}
+</style>
+<div class="top"><div>自动上品 · 完整链路草图</div><h1>一次配置，之后按额度自动执行</h1><p>上传图片时只选择商品类型；样机、标题词、商品模板、目标店铺和每日任务均由上品方案接管。</p></div>
+<div class="layout">
+  <aside class="card">
+    <div class="nav-step active"><span class="num">1</span><div><strong>上架方案</strong><div>品类与模板映射</div></div></div>
+    <div class="nav-step"><span class="num">2</span><div><strong>店铺分配</strong><div>平均分配与额度</div></div></div>
+    <div class="nav-step"><span class="num">3</span><div><strong>自动调度</strong><div>时间窗口与批次</div></div></div>
+    <div class="nav-step"><span class="num">4</span><div><strong>任务中心</strong><div>进度、失败和恢复</div></div></div>
+    <div class="note">以后上传图片只需选择“头巾 1:1”，不再逐次选择样机、提示词和店铺。</div>
+  </aside>
+  <main>
+    <section class="card">
+      <div class="section-title"><h2>上架配置方案：头巾自动上品</h2><span class="status">配置完整</span></div>
+      <div class="mapping"><div class="mapbox">头巾 1:1<br><small>商品类型</small></div><div class="arrow">→</div><div class="mapbox">头巾样机<br><small>6 张效果图</small></div><div class="arrow">→</div><div class="mapbox">头巾标题模板<br><small>自动生成</small></div></div>
+      <div class="fields">
+        <div class="field"><span>商品模板</span><strong>头巾标准商品模板</strong></div>
+        <div class="field"><span>图片选择</span><strong>最早上传且从未使用</strong></div>
+        <div class="field"><span>执行窗口</span><strong>每日 08:00–22:00</strong></div>
+        <div class="field"><span>资源策略</span><strong>每批 10 张，缓冲 20 张</strong></div>
+      </div>
+      <h3>适用店铺</h3>
+      <div class="shop-row"><strong>头巾店铺 A</strong><span class="on">已启用</span><span class="quota">Ozon 可创建 82</span><strong>计划 80</strong></div>
+      <div class="shop-row"><strong>头巾店铺 B</strong><span class="on">已启用</span><span class="quota">Ozon 可创建 80</span><strong>计划 80</strong></div>
+      <div class="shop-row"><strong>头巾店铺 C</strong><span class="on">已启用</span><span class="quota">Ozon 可创建 84</span><strong>计划 80</strong></div>
+      <div class="buttons"><button class="btn">暂停方案</button><button class="btn">检查配置</button><button class="btn primary">保存并启用</button></div>
+    </section>
+    <section class="card" style="margin-top:18px">
+      <div class="section-title"><h2>上传中 · 批次任务视图</h2><span>今日计划 240 · 已完成 70</span></div>
+      <div class="pipeline"><div class="pipe"><span>等待处理</span><strong>150</strong></div><div class="pipe running"><span>套图/标题中</span><strong>10</strong></div><div class="pipe"><span>提交 Ozon</span><strong>10</strong></div><div class="pipe"><span>失败待处理</span><strong>2</strong></div></div>
+      <div class="batch"><div class="batch-head"><div><strong>批次 #0728-08 · 头巾</strong><div>店铺 A 4 张 · B 3 张 · C 3 张</div></div><span>正在套图</span><strong>6 / 10</strong><span>预计 8 分钟</span></div><div class="progress"><span style="width:60%"></span></div><div class="batch-actions"><button class="mini">暂停</button><button class="mini">查看图片</button><button class="mini">查看日志</button></div></div>
+      <div class="batch"><div class="batch-head"><div><strong>批次 #0728-07 · 头巾</strong><div>图片已锁定，不会进入其他店铺</div></div><span>提交 Ozon</span><strong>8 / 10</strong><span>2 张重试</span></div><div class="progress"><span style="width:80%"></span></div><div class="batch-actions"><button class="mini">只重试失败项</button><button class="mini">查看错误</button></div></div>
+      <div class="batch"><div class="batch-head"><div><strong>批次 #0728-06 · 头巾</strong><div>已完成并回写云端状态</div></div><span>已完成</span><strong>10 / 10</strong><span>14:26</span></div><div class="progress"><span style="width:100%"></span></div><div class="batch-actions"><button class="mini">查看结果</button></div></div>
+    </section>
+  </main>
+</div>
+<div class="buttons"><button class="btn" data-choice="integrated_needs_changes">需要调整</button><button class="btn primary" data-choice="approve_integrated_design">确认完整链路</button></div>

@@ -18,6 +18,7 @@ export const shopDraftSchema = z.object({
 });
 
 export const appSettingsSchema = z.object({
+  cloudApiBaseUrl: z.string(),
   defaultSourceRoot: z.string(),
   defaultOutputRoot: z.string(),
   baiduCookie: z.string(),

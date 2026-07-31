@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { PathInput } from "../../lib/PathInput";
 
@@ -6,15 +6,85 @@ interface Props {
   onJobStarted: () => void;
 }
 
+const SCENE_FORM_CACHE_KEY = "ozon-sjsq:scene-form:v1";
+const defaultSceneIds = ["flat_full"];
+
+interface SceneFormDraft {
+  sourceRoot: string;
+  outputRoot: string;
+  mockupRoot: string;
+  singleImage: string;
+  aspectRatio: string;
+  sizeLabel: string;
+  maxItems: number;
+  sceneIds: string[];
+}
+
+function defaultSceneForm(): SceneFormDraft {
+  return {
+    sourceRoot: "",
+    outputRoot: "",
+    mockupRoot: "",
+    singleImage: "",
+    aspectRatio: "1:1",
+    sizeLabel: "",
+    maxItems: 0,
+    sceneIds: defaultSceneIds,
+  };
+}
+
+function readSceneForm() {
+  const fallback = defaultSceneForm();
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(SCENE_FORM_CACHE_KEY);
+    if (!raw) return fallback;
+    const cached = JSON.parse(raw) as Partial<SceneFormDraft>;
+    return {
+      sourceRoot: textValue(cached.sourceRoot, fallback.sourceRoot),
+      outputRoot: textValue(cached.outputRoot, fallback.outputRoot),
+      mockupRoot: textValue(cached.mockupRoot, fallback.mockupRoot),
+      singleImage: textValue(cached.singleImage, fallback.singleImage),
+      aspectRatio: textValue(cached.aspectRatio, fallback.aspectRatio),
+      sizeLabel: textValue(cached.sizeLabel, fallback.sizeLabel),
+      maxItems: numberValue(cached.maxItems, fallback.maxItems),
+      sceneIds: Array.isArray(cached.sceneIds) && cached.sceneIds.length > 0
+        ? cached.sceneIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        : fallback.sceneIds,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function writeSceneForm(form: SceneFormDraft) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SCENE_FORM_CACHE_KEY, JSON.stringify(form));
+  } catch {
+    // localStorage can be unavailable in restricted webviews.
+  }
+}
+
+function textValue(value: unknown, fallback: string) {
+  return typeof value === "string" ? value : fallback;
+}
+
+function numberValue(value: unknown, fallback: number) {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
 export function ScenePage({ onJobStarted }: Props) {
-  const [sourceRoot, setSourceRoot] = useState("");
-  const [outputRoot, setOutputRoot] = useState("");
-  const [mockupRoot, setMockupRoot] = useState("");
-  const [singleImage, setSingleImage] = useState("");
-  const [aspectRatio, setAspectRatio] = useState("1:1");
-  const [sizeLabel, setSizeLabel] = useState("");
-  const [maxItems, setMaxItems] = useState(0);
-  const [sceneIds, setSceneIds] = useState<string[]>(["flat_full"]);
+  const [initialForm] = useState(readSceneForm);
+  const [sourceRoot, setSourceRoot] = useState(initialForm.sourceRoot);
+  const [outputRoot, setOutputRoot] = useState(initialForm.outputRoot);
+  const [mockupRoot, setMockupRoot] = useState(initialForm.mockupRoot);
+  const [singleImage, setSingleImage] = useState(initialForm.singleImage);
+  const [aspectRatio, setAspectRatio] = useState(initialForm.aspectRatio);
+  const [sizeLabel, setSizeLabel] = useState(initialForm.sizeLabel);
+  const [maxItems, setMaxItems] = useState(initialForm.maxItems);
+  const [sceneIds, setSceneIds] = useState<string[]>(initialForm.sceneIds);
 
   const availableScenes = [
     { id: "flat_full", label: "平铺全幅" },
@@ -28,11 +98,25 @@ export function ScenePage({ onJobStarted }: Props) {
     setSceneIds((prev) => (prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]));
   };
 
+  useEffect(() => {
+    writeSceneForm({
+      sourceRoot,
+      outputRoot,
+      mockupRoot,
+      singleImage,
+      aspectRatio,
+      sizeLabel,
+      maxItems,
+      sceneIds,
+    });
+  }, [sourceRoot, outputRoot, mockupRoot, singleImage, aspectRatio, sizeLabel, maxItems, sceneIds]);
+
   const startLocal = async () => {
     await api.startLocalSceneJob({
       sourceRoot,
       outputRoot,
       mockupRoot,
+      singleImage: singleImage.trim() || undefined,
       aspectRatio,
       sceneIds,
       sizeLabel,

@@ -1,24 +1,28 @@
 use crate::core::baidu_pan::{self, BaiduPanOptions};
+use crate::core::db::Database;
 use crate::core::jobs::JobRegistry;
-use crate::core::models::{JobStatus, OrderDocumentsRequest};
+use crate::core::models::{JobStatus, OrderDocumentsRequest, OrderShippingLabelDownloadRequest};
 use crate::core::ozon::OzonSellerClient;
 use crate::core::ozon_seller_web::{self, OzonSellerWebClient};
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::fs;
+use url::Url;
 
 pub async fn run_order_documents_job(
     jobs: JobRegistry,
     job_id: String,
     request: OrderDocumentsRequest,
     client: OzonSellerClient,
+    db_path: PathBuf,
 ) {
     jobs.update(&job_id, JobStatus::Running, 3, None);
     jobs.log(&job_id, "info", "订单文件下载任务已开始。");
 
-    let result = run_inner(&jobs, &job_id, request, client).await;
+    let result = run_inner(&jobs, &job_id, request, client, db_path).await;
     match result {
         Ok((output_root, success_count, failed_count)) => {
             jobs.log(
@@ -36,9 +40,81 @@ pub async fn run_order_documents_job(
     }
 }
 
+pub async fn download_shipping_labels(
+    request: &OrderShippingLabelDownloadRequest,
+    db_path: PathBuf,
+) -> Result<()> {
+    if request.assignments.is_empty() {
+        anyhow::bail!("请至少提供一个物流贴单地址");
+    }
+    for assignment in &request.assignments {
+        let shop_id = assignment.shop_id.trim();
+        let order_number = assignment.order_number.trim();
+        let raw_url = assignment.url.trim();
+        if shop_id.is_empty() || order_number.is_empty() || raw_url.is_empty() {
+            anyhow::bail!("物流贴单分配缺少店铺、订单号或 PDF 地址");
+        }
+        let parsed = Url::parse(raw_url).context("物流贴单地址格式不正确")?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            anyhow::bail!("物流贴单地址只支持 HTTP 或 HTTPS：{}", raw_url);
+        }
+        if !parsed.path().to_ascii_lowercase().ends_with(".pdf") {
+            anyhow::bail!("物流贴单地址必须指向 PDF 文件：{}", raw_url);
+        }
+    }
+    if request.output_root.trim().is_empty() {
+        anyhow::bail!("请选择输出目录");
+    }
+    let output_root = PathBuf::from(request.output_root.trim());
+    fs::create_dir_all(&output_root)
+        .await
+        .with_context(|| format!("创建输出目录失败：{}", output_root.display()))?;
+
+    for assignment in &request.assignments {
+        let shop_id = assignment.shop_id.trim();
+        let order_number = assignment.order_number.trim();
+        let (shop_name, offer_ids) = {
+            let db = Database::open_at(db_path.clone())?;
+            let shop_name = db.get_shop(shop_id)?.name;
+            let offer_ids = db
+                .get_saved_order_posting(shop_id, order_number)?
+                .map(|posting| posting.offer_ids)
+                .unwrap_or_default();
+            (shop_name, offer_ids)
+        };
+        let order_dir = output_root.join(order_download_folder_name(
+            &shop_name,
+            &offer_ids,
+            order_number,
+        ));
+        fs::create_dir_all(&order_dir)
+            .await
+            .with_context(|| format!("?????????{}", order_dir.display()))?;
+        let pdf = download_shipping_label_pdf(assignment.url.trim()).await?;
+        fs::write(order_dir.join("logistics-label.pdf"), pdf)
+            .await
+            .with_context(|| format!("???? {} ????? PDF ??", order_number))?;
+        let db = Database::open_at(db_path.clone())?;
+        db.mark_order_shipping_label_downloaded(
+            shop_id,
+            order_number,
+            &order_dir.to_string_lossy(),
+        )?;
+    }
+    Ok(())
+}
+
 pub fn validate_request(request: &OrderDocumentsRequest) -> Result<()> {
-    if clean_order_numbers(&request.order_numbers).is_empty() {
+    let order_numbers = clean_order_numbers(&request.order_numbers);
+    if order_numbers.is_empty() {
         anyhow::bail!("请至少输入一个订单/货件编号");
+    }
+    if let Some(order_number) = order_numbers.iter().find(|order_number| {
+        Url::parse(order_number)
+            .map(|parsed| matches!(parsed.scheme(), "http" | "https"))
+            .unwrap_or(false)
+    }) {
+        anyhow::bail!("订单/货件编号不能是物流 PDF 地址：{}", order_number);
     }
     if request.output_root.trim().is_empty() {
         anyhow::bail!("请选择输出目录");
@@ -53,6 +129,7 @@ pub fn validate_request(request: &OrderDocumentsRequest) -> Result<()> {
             .context("请先填写百度网盘 Cookie")?;
         baidu_pan::validate_cookie(cookie)?;
     }
+    validate_shipping_labels(request)?;
     Ok(())
 }
 
@@ -61,10 +138,14 @@ async fn run_inner(
     job_id: &str,
     request: OrderDocumentsRequest,
     client: OzonSellerClient,
+    db_path: PathBuf,
 ) -> Result<(String, usize, usize)> {
     validate_request(&request)?;
     let order_numbers = clean_order_numbers(&request.order_numbers);
     let output_root = PathBuf::from(request.output_root.trim());
+    let shop_name = Database::open_at(db_path.clone())?
+        .get_shop(&request.shop_id)?
+        .name;
     fs::create_dir_all(&output_root)
         .await
         .with_context(|| format!("创建输出目录失败：{}", output_root.display()))?;
@@ -84,8 +165,37 @@ async fn run_inner(
         jobs.update(job_id, JobStatus::Running, progress, None);
         jobs.log(job_id, "info", &format!("处理 {order_ref}"));
 
-        match process_order_ref(jobs, job_id, &request, &client, &output_root, order_ref).await {
-            Ok(()) => success_count += 1,
+        match process_order_ref(
+            jobs,
+            job_id,
+            &request,
+            &client,
+            &output_root,
+            &shop_name,
+            order_ref,
+        )
+        .await
+        {
+            Ok((posting_numbers, order_dir)) => {
+                let db = Database::open_at(db_path.clone())?;
+                db.mark_order_postings_downloaded(
+                    &request.shop_id,
+                    &posting_numbers,
+                    &order_dir.to_string_lossy(),
+                )?;
+                if request
+                    .shipping_labels
+                    .iter()
+                    .any(|label| label.order_number.trim() == order_ref)
+                {
+                    db.mark_order_shipping_label_downloaded(
+                        &request.shop_id,
+                        order_ref,
+                        &order_dir.to_string_lossy(),
+                    )?;
+                }
+                success_count += 1;
+            }
             Err(error) => {
                 failed_count += 1;
                 jobs.log(job_id, "error", &format!("{order_ref} 失败：{error:#}"));
@@ -106,13 +216,9 @@ async fn process_order_ref(
     request: &OrderDocumentsRequest,
     client: &OzonSellerClient,
     output_root: &Path,
+    shop_name: &str,
     order_ref: &str,
-) -> Result<()> {
-    let order_dir = output_root.join(safe_file_name(order_ref));
-    fs::create_dir_all(&order_dir)
-        .await
-        .with_context(|| format!("创建订单目录失败：{}", order_dir.display()))?;
-
+) -> Result<(Vec<String>, PathBuf)> {
     let postings = resolve_postings(client, order_ref).await?;
     if postings.is_empty() {
         anyhow::bail!("没有找到对应 Ozon 货件：{order_ref}");
@@ -124,6 +230,19 @@ async fn process_order_ref(
     if posting_numbers.is_empty() {
         anyhow::bail!("Ozon 返回中缺少 posting_number：{order_ref}");
     }
+
+    let products = merged_products(&postings);
+    let offer_ids = products
+        .iter()
+        .filter_map(|item| item.get("offer_id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let order_dir = output_root.join(order_download_folder_name(shop_name, &offer_ids, order_ref));
+    fs::create_dir_all(&order_dir)
+        .await
+        .with_context(|| format!("创建订单目录失败：{}", order_dir.display()))?;
 
     let mut seller_web = seller_web_client(request)?;
     let barcode_pdf = seller_web
@@ -164,17 +283,16 @@ async fn process_order_ref(
         }
     }
 
-    let products = merged_products(&postings);
-
-    let offer_ids = products
+    let shipping_label_url = request
+        .shipping_labels
         .iter()
-        .filter_map(|item| item.get("offer_id").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
+        .find(|item| item.order_number.trim() == order_ref)
+        .map(|item| item.url.trim())
+        .context("当前订单缺少物流贴单 PDF 地址")?;
+    let shipping_label_pdf = download_shipping_label_pdf(shipping_label_url).await?;
+    fs::write(order_dir.join("logistics-label.pdf"), shipping_label_pdf)
+        .await
+        .context("保存物流贴单 PDF 失败")?;
 
     if request.download_materials && offer_ids.is_empty() {
         anyhow::bail!("订单商品没有返回货号 offer_id，无法下载百度网盘素材");
@@ -195,7 +313,68 @@ async fn process_order_ref(
         ensure_baidu_download_complete(&result, offer_ids.len())?;
     }
 
+    Ok((posting_numbers, order_dir))
+}
+
+fn validate_shipping_labels(request: &OrderDocumentsRequest) -> Result<()> {
+    let order_numbers = clean_order_numbers(&request.order_numbers);
+    if request.shipping_labels.len() != order_numbers.len() {
+        anyhow::bail!(
+            "物流贴单地址数量必须与订单数量一致：订单 {} 个，地址 {} 个",
+            order_numbers.len(),
+            request.shipping_labels.len()
+        );
+    }
+    let order_set = order_numbers.iter().cloned().collect::<BTreeSet<_>>();
+    let mut labels_by_order = BTreeMap::new();
+    let mut urls = BTreeSet::new();
+    for label in &request.shipping_labels {
+        let order_number = label.order_number.trim();
+        let raw_url = label.url.trim();
+        if !order_set.contains(order_number) {
+            anyhow::bail!("物流贴单对应了当前任务之外的订单：{}", order_number);
+        }
+        if labels_by_order
+            .insert(order_number.to_string(), raw_url.to_string())
+            .is_some()
+        {
+            anyhow::bail!("订单 {} 重复分配了物流贴单", order_number);
+        }
+        if !urls.insert(raw_url.to_string()) {
+            anyhow::bail!("同一个物流贴单地址不能重复使用：{}", raw_url);
+        }
+        let parsed = Url::parse(raw_url).context("物流贴单地址格式不正确")?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            anyhow::bail!("物流贴单地址只支持 HTTP 或 HTTPS：{}", raw_url);
+        }
+        if !parsed.path().to_ascii_lowercase().ends_with(".pdf") {
+            anyhow::bail!("物流贴单地址必须指向 PDF 文件：{}", raw_url);
+        }
+    }
+    if labels_by_order.len() != order_set.len() {
+        anyhow::bail!("每个订单都必须分配一个不同的物流贴单地址");
+    }
     Ok(())
+}
+
+async fn download_shipping_label_pdf(url: &str) -> Result<Vec<u8>> {
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .context("创建物流贴单下载客户端失败")?
+        .get(url)
+        .send()
+        .await
+        .context("下载物流贴单 PDF 失败")?;
+    let status = response.status();
+    if !status.is_success() {
+        anyhow::bail!("下载物流贴单 PDF 失败：HTTP {}", status);
+    }
+    let bytes = response.bytes().await.context("读取物流贴单 PDF 失败")?;
+    if !bytes.starts_with(b"%PDF-") {
+        anyhow::bail!("物流贴单地址返回的内容不是有效 PDF");
+    }
+    Ok(bytes.to_vec())
 }
 
 fn seller_web_client(request: &OrderDocumentsRequest) -> Result<OzonSellerWebClient> {
@@ -307,6 +486,31 @@ fn clean_order_numbers(order_numbers: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn order_download_folder_name(shop_name: &str, offer_ids: &[String], order_number: &str) -> String {
+    let mut unique_offer_ids = Vec::new();
+    for offer_id in offer_ids {
+        let offer_id = offer_id.trim();
+        if !offer_id.is_empty() && !unique_offer_ids.iter().any(|item| item == offer_id) {
+            unique_offer_ids.push(offer_id.to_string());
+        }
+    }
+    let offer_part = if unique_offer_ids.is_empty() {
+        "未知货号".to_string()
+    } else {
+        unique_offer_ids
+            .iter()
+            .map(|offer_id| safe_file_name(offer_id))
+            .collect::<Vec<_>>()
+            .join("、")
+    };
+    format!(
+        "{}+{}+{}",
+        safe_file_name(shop_name),
+        offer_part,
+        safe_file_name(order_number)
+    )
+}
+
 fn safe_file_name(value: &str) -> String {
     let cleaned = value
         .chars()
@@ -351,6 +555,34 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn order_download_folder_name_formats_shop_offers_and_order() {
+        assert_eq!(
+            order_download_folder_name("星空店", &["SKU001".into()], "123-1"),
+            "星空店+SKU001+123-1"
+        );
+        assert_eq!(
+            order_download_folder_name(
+                "星空店",
+                &["SKU002".into(), "SKU001".into(), "SKU002".into()],
+                "123-2",
+            ),
+            "星空店+SKU002、SKU001+123-2"
+        );
+    }
+
+    #[test]
+    fn order_download_folder_name_sanitizes_components_and_handles_missing_offers() {
+        assert_eq!(
+            order_download_folder_name("店/铺", &["SKU:01".into()], "123?1"),
+            "店_铺+SKU_01+123_1"
+        );
+        assert_eq!(
+            order_download_folder_name("星空店", &[], "123-1"),
+            "星空店+未知货号+123-1"
+        );
+    }
+
+    #[test]
     fn cleans_order_numbers_from_pasted_text() {
         let rows = clean_order_numbers(&[" 123-1,123-1 ".into(), "456； 789\n456".into()]);
         assert_eq!(rows, vec!["123-1", "456", "789"]);
@@ -387,6 +619,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_logistics_url_as_order_number() {
+        let mut request = valid_request();
+        request.order_numbers =
+            vec!["https://youla-gl.ilinexpress.com/gl/TYP_COLLECT_BAG_PDF/label.pdf".into()];
+        request.shipping_labels[0].order_number = request.order_numbers[0].clone();
+
+        assert_eq!(
+            validate_request(&request).unwrap_err().to_string(),
+            "订单/货件编号不能是物流 PDF 地址：https://youla-gl.ilinexpress.com/gl/TYP_COLLECT_BAG_PDF/label.pdf"
+        );
+    }
+
+    #[test]
     fn validates_order_document_request_before_starting_job() {
         let mut request = valid_request();
         assert!(validate_request(&request).is_ok());
@@ -418,6 +663,10 @@ mod tests {
             baidu_search_dir: None,
             baidu_recursive: true,
             download_materials: false,
+            shipping_labels: vec![crate::core::models::OrderShippingLabel {
+                order_number: "123-1".into(),
+                url: "https://example.test/label.pdf".into(),
+            }],
         }
     }
 }

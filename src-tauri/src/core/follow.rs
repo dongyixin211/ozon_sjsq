@@ -521,7 +521,7 @@ async fn resolve_follow_warehouse_id(
         }
         [] => anyhow::bail!("{} 未设置跟卖仓库，且 Ozon 未返回仓库", follower.shop.name),
         _ => anyhow::bail!(
-            "{} 未设置跟卖仓库，且 Ozon 返回多个仓库，请在设置页填写唯一仓库 ID",
+            "{} 未设置跟卖仓库，且 Ozon 返回多个仓库，请在编辑店铺中填写唯一仓库 ID",
             follower.shop.name
         ),
     }
@@ -1024,6 +1024,13 @@ mod tests {
             shop_role: Some("follower".into()),
             follows_shop_id: Some("main-id".into()),
             follow_warehouse_id: None,
+            maintenance_warehouse_id: None,
+            maintenance_stock: Some(50),
+            maintenance_stock_enabled: true,
+            maintenance_barcode_enabled: true,
+            maintenance_action_enabled: false,
+            maintenance_interval_minutes: Some(5),
+            maintenance_action_configs: Vec::new(),
             ozon_seller_cookie_stored: false,
             api_key_plain: None,
             oss_secret_plain: None,

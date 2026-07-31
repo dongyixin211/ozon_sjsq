@@ -11,6 +11,7 @@ use std::path::Path;
 pub struct OpenAiCompatibleClient {
     base_url: String,
     api_key: String,
+    cloud_auth_token: Option<String>,
     http: Client,
 }
 
@@ -38,18 +39,86 @@ impl OpenAiCompatibleClient {
         Ok(Self {
             base_url,
             api_key,
+            cloud_auth_token: None,
             http: Client::builder()
+                .use_rustls_tls()
+                .timeout(std::time::Duration::from_secs(180))
+                .build()?,
+        })
+    }
+
+    pub fn new_cloud_proxy(
+        base_url: impl Into<String>,
+        cloud_auth_token: impl Into<String>,
+        kind: impl Into<String>,
+    ) -> Result<Self> {
+        let base_url = base_url.into().trim().trim_end_matches('/').to_string();
+        let token = cloud_auth_token.into().trim().to_string();
+        let kind = kind.into().trim().to_string();
+        if base_url.is_empty() {
+            anyhow::bail!("云端 AI 代理地址不能为空");
+        }
+        if token.is_empty() {
+            anyhow::bail!("请先登录会员账号，再使用云端 AI 功能");
+        }
+        Ok(Self {
+            base_url,
+            api_key: kind,
+            cloud_auth_token: Some(token),
+            http: Client::builder()
+                .use_rustls_tls()
                 .timeout(std::time::Duration::from_secs(180))
                 .build()?,
         })
     }
 
     fn with_auth(&self, request: RequestBuilder) -> RequestBuilder {
+        if let Some(token) = &self.cloud_auth_token {
+            return request.bearer_auth(token);
+        }
         if self.api_key.is_empty() {
             request
         } else {
             request.bearer_auth(&self.api_key)
         }
+    }
+
+    fn is_cloud_proxy(&self) -> bool {
+        self.cloud_auth_token.is_some()
+    }
+
+    fn cloud_proxy_kind(&self) -> &str {
+        if self.api_key.trim().eq_ignore_ascii_case("image") {
+            "image"
+        } else {
+            "text"
+        }
+    }
+
+    async fn cloud_proxy_request(
+        &self,
+        path: &str,
+        method: &str,
+        body: Value,
+        label: &str,
+    ) -> Result<Value> {
+        let response = self
+            .with_auth(self.http.post(format!("{}/ai/proxy", self.base_url)))
+            .json(&json!({
+                "kind": self.cloud_proxy_kind(),
+                "path": path,
+                "method": method,
+                "body": body
+            }))
+            .send()
+            .await
+            .with_context(|| format!("{label}云端代理请求失败"))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("{label}云端代理 HTTP {}: {}", status.as_u16(), text);
+        }
+        serde_json::from_str(&text).with_context(|| format!("{label}云端代理返回不是合法 JSON"))
     }
 
     pub async fn generate_title_from_images(
@@ -91,6 +160,12 @@ impl OpenAiCompatibleClient {
     }
 
     pub async fn list_models(&self) -> Result<Vec<String>> {
+        if self.is_cloud_proxy() {
+            let data = self
+                .cloud_proxy_request("models", "GET", json!({}), "模型列表接口")
+                .await?;
+            return parse_models_response(&data);
+        }
         let models_url =
             if self.api_key.is_empty() && !self.base_url.trim_end_matches('/').ends_with("/v1") {
                 format!("{}/api/tags", self.ollama_base_url())
@@ -108,46 +183,7 @@ impl OpenAiCompatibleClient {
             anyhow::bail!("模型列表接口 HTTP {}: {}", status.as_u16(), body);
         }
         let data: Value = serde_json::from_str(&body).context("模型列表接口返回不是合法 JSON")?;
-        let mut models = Vec::new();
-        if let Some(items) = data.get("data").and_then(Value::as_array) {
-            for item in items {
-                if let Some(id) = item
-                    .get("id")
-                    .or_else(|| item.get("name"))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                {
-                    models.push(id.to_string());
-                }
-            }
-        } else if let Some(items) = data.get("models").and_then(Value::as_array) {
-            for item in items {
-                match item {
-                    Value::String(value) if !value.trim().is_empty() => {
-                        models.push(value.trim().to_string());
-                    }
-                    Value::Object(_) => {
-                        if let Some(id) = item
-                            .get("id")
-                            .or_else(|| item.get("name"))
-                            .and_then(Value::as_str)
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                        {
-                            models.push(id.to_string());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        models.sort();
-        models.dedup();
-        if models.is_empty() {
-            anyhow::bail!("模型列表为空或格式不支持");
-        }
-        Ok(models)
+        parse_models_response(&data)
     }
 
     pub async fn edit_image_from_reference(
@@ -168,6 +204,23 @@ impl OpenAiCompatibleClient {
         reference_image: &Path,
         output_path: &Path,
     ) -> Result<()> {
+        if self.is_cloud_proxy() {
+            let image_data_url = title_image_data_url(reference_image)?;
+            let data = self
+                .cloud_proxy_request(
+                    "images/edits",
+                    "POST",
+                    json!({
+                        "model": model,
+                        "prompt": prompt,
+                        "image": image_data_url,
+                        "size": "1024x1536"
+                    }),
+                    "图片编辑接口",
+                )
+                .await?;
+            return save_image_response(&self.http, &data, output_path).await;
+        }
         let reference_image = reference_image.to_path_buf();
         let (bytes, filename, mime) = tauri::async_runtime::spawn_blocking(move || {
             edit_reference_image_part(&reference_image)
@@ -214,19 +267,26 @@ impl OpenAiCompatibleClient {
                 )
                 .await;
         }
+        let payload = json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": title_bundle_system_prompt()},
+                {"role": "user", "content": title_bundle_user_prompt(prompt)}
+            ],
+            "temperature": 0.4
+        });
+        if self.is_cloud_proxy() {
+            let data = self
+                .cloud_proxy_request("chat/completions", "POST", payload, "文案接口")
+                .await?;
+            return chat_message_content(&data, "文案接口");
+        }
         let response = self
             .with_auth(
                 self.http
                     .post(format!("{}/chat/completions", self.base_url)),
             )
-            .json(&json!({
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": title_bundle_system_prompt()},
-                    {"role": "user", "content": title_bundle_user_prompt(prompt)}
-                ],
-                "temperature": 0.4
-            }))
+            .json(&payload)
             .send()
             .await
             .context("文案接口请求失败")?;
@@ -280,19 +340,26 @@ impl OpenAiCompatibleClient {
             }));
         }
 
+        let payload = json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": title_bundle_system_prompt()},
+                {"role": "user", "content": content}
+            ],
+            "temperature": 0.4
+        });
+        if self.is_cloud_proxy() {
+            let data = self
+                .cloud_proxy_request("chat/completions", "POST", payload, "文案图片接口")
+                .await?;
+            return chat_message_content(&data, "文案图片接口");
+        }
         let response = self
             .with_auth(
                 self.http
                     .post(format!("{}/chat/completions", self.base_url)),
             )
-            .json(&json!({
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": title_bundle_system_prompt()},
-                    {"role": "user", "content": content}
-                ],
-                "temperature": 0.4
-            }))
+            .json(&payload)
             .send()
             .await
             .context("文案图片接口请求失败")?;
@@ -383,6 +450,10 @@ pub fn is_pixel_provider(provider: &str) -> bool {
     provider.trim().eq_ignore_ascii_case("pixel")
 }
 
+pub fn is_cloud_proxy_provider(provider: &str) -> bool {
+    provider.trim().eq_ignore_ascii_case("cloud-proxy")
+}
+
 pub fn is_missing_chat_content_error(error: &anyhow::Error) -> bool {
     error
         .chain()
@@ -410,6 +481,49 @@ fn error_chain(error: &anyhow::Error) -> String {
         .map(|cause| cause.to_string())
         .collect::<Vec<_>>()
         .join(": ")
+}
+
+fn parse_models_response(data: &Value) -> Result<Vec<String>> {
+    let mut models = Vec::new();
+    if let Some(items) = data.get("data").and_then(Value::as_array) {
+        for item in items {
+            if let Some(id) = item
+                .get("id")
+                .or_else(|| item.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                models.push(id.to_string());
+            }
+        }
+    } else if let Some(items) = data.get("models").and_then(Value::as_array) {
+        for item in items {
+            match item {
+                Value::String(value) if !value.trim().is_empty() => {
+                    models.push(value.trim().to_string());
+                }
+                Value::Object(_) => {
+                    if let Some(id) = item
+                        .get("id")
+                        .or_else(|| item.get("name"))
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        models.push(id.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    models.sort();
+    models.dedup();
+    if models.is_empty() {
+        anyhow::bail!("模型列表为空或格式不支持");
+    }
+    Ok(models)
 }
 
 fn chat_message_content(data: &Value, endpoint: &str) -> Result<String> {

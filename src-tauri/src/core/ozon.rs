@@ -1,8 +1,10 @@
 use crate::core::models::{
-    CategoryOption, OrderPostingRow, OzonProductRow, ProductAnalyticsRow, WarehouseOption,
+    CategoryOption, OrderPostingProduct, OrderPostingRow, OzonProductRow, ProductAnalyticsRow,
+    WarehouseOption,
 };
 use anyhow::{Context, Result};
 use reqwest::Client;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 
@@ -14,6 +16,25 @@ pub struct OzonSellerClient {
     client_id: String,
     api_key: String,
     http: Client,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OzonUploadQuota {
+    pub daily_create_limit: u64,
+    pub daily_create_usage: u64,
+    pub daily_create_remaining: u64,
+    pub daily_update_limit: u64,
+    pub daily_update_usage: u64,
+    pub daily_update_remaining: u64,
+    pub total_limit: u64,
+    pub total_usage: u64,
+    pub total_remaining: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_limits: Option<Value>,
+    pub fetched_at: String,
 }
 
 impl OzonSellerClient {
@@ -93,6 +114,13 @@ impl OzonSellerClient {
             .await
     }
 
+    pub async fn product_upload_quota(&self) -> Result<OzonUploadQuota> {
+        let data = self
+            .request_json("/v4/product/info/limit", json!({}))
+            .await?;
+        parse_product_upload_quota(&data)
+    }
+
     pub async fn product_info(&self, offer_ids: Vec<String>) -> Result<Value> {
         self.request_json("/v3/product/info/list", json!({ "offer_id": offer_ids }))
             .await
@@ -105,6 +133,62 @@ impl OzonSellerClient {
             .collect::<Vec<_>>();
         self.request_json("/v3/product/info/list", json!({ "product_id": ids }))
             .await
+    }
+
+    pub async fn enrich_order_posting_images(&self, rows: &mut [OrderPostingRow]) -> Result<()> {
+        let offer_ids = rows
+            .iter()
+            .flat_map(|row| row.offer_ids.iter())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if offer_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut images_by_offer = std::collections::HashMap::new();
+        for chunk in offer_ids.chunks(100) {
+            let data = self.product_info(chunk.to_vec()).await?;
+            for item in extract_items(&data) {
+                let offer_id = item
+                    .get("offer_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if let Some(image_url) = product_image_url(&item) {
+                    images_by_offer.insert(offer_id, image_url);
+                }
+            }
+        }
+
+        for row in rows {
+            if let Some(products) = row.products.as_mut() {
+                for product in products {
+                    if product.image_url.is_none() {
+                        product.image_url = images_by_offer.get(&product.offer_id).cloned();
+                    }
+                }
+            }
+            if row.image_url.is_none() {
+                row.image_url = row
+                    .products
+                    .as_ref()
+                    .and_then(|products| {
+                        products
+                            .iter()
+                            .find_map(|product| product.image_url.clone())
+                    })
+                    .or_else(|| {
+                        row.offer_ids
+                            .iter()
+                            .find_map(|offer_id| images_by_offer.get(offer_id).cloned())
+                    });
+            }
+        }
+        Ok(())
     }
 
     pub async fn product_analytics(
@@ -326,6 +410,17 @@ impl OzonSellerClient {
         if include_barcodes {
             self.attach_product_barcodes(&mut rows).await?;
         }
+        Ok(rows)
+    }
+
+    pub async fn list_all_products_with_attributes_by_visibility(
+        &self,
+        visibility: &str,
+    ) -> Result<Vec<OzonProductRow>> {
+        let mut rows = self
+            .list_all_products_by_visibility(visibility, false)
+            .await?;
+        self.attach_product_attributes(&mut rows).await?;
         Ok(rows)
     }
 
@@ -773,6 +868,14 @@ impl OzonSellerClient {
     }
 
     pub async fn fbs_posting(&self, posting_number: &str) -> Result<Value> {
+        self.fbs_posting_detail(posting_number, false).await
+    }
+
+    async fn fbs_posting_detail(
+        &self,
+        posting_number: &str,
+        financial_data: bool,
+    ) -> Result<Value> {
         self.request_json(
             "/v3/posting/fbs/get",
             json!({
@@ -780,7 +883,7 @@ impl OzonSellerClient {
                 "with": {
                     "analytics_data": false,
                     "barcodes": true,
-                    "financial_data": false,
+                    "financial_data": financial_data,
                     "translit": false
                 }
             }),
@@ -849,27 +952,172 @@ impl OzonSellerClient {
             filter.insert("status".into(), json!(status.trim()));
         }
 
-        let data = self
-            .request_json(
-                "/v3/posting/fbs/list",
-                json!({
-                    "dir": "DESC",
-                    "filter": filter,
-                    "limit": limit.clamp(1, 1000),
-                    "offset": 0,
-                    "with": fbs_list_with_barcodes()
-                }),
-            )
-            .await?;
-        Ok(extract_fbs_postings(&data)
-            .into_iter()
-            .filter_map(order_posting_row)
-            .collect())
+        let target_limit = limit.clamp(1, 5000);
+        let page_limit = target_limit.min(1000);
+        let mut offset = 0;
+        let mut rows = Vec::new();
+        loop {
+            let data = self
+                .request_json(
+                    "/v3/posting/fbs/list",
+                    json!({
+                        "dir": "DESC",
+                        "filter": filter,
+                        "limit": page_limit,
+                        "offset": offset,
+                        "with": fbs_list_with_barcodes()
+                    }),
+                )
+                .await?;
+            let postings = extract_fbs_postings(&data);
+            let received = postings.len() as u32;
+            rows.extend(
+                postings
+                    .into_iter()
+                    .filter_map(|posting| order_posting_row(posting, "fbs")),
+            );
+            if rows.len() >= target_limit as usize || !fbs_list_has_next(&data) || received == 0 {
+                break;
+            }
+            offset += page_limit;
+        }
+        rows.truncate(target_limit as usize);
+        Ok(rows)
+    }
+
+    pub async fn fbo_posting_list(
+        &self,
+        since: String,
+        to: String,
+        status: String,
+        limit: u32,
+    ) -> Result<Vec<OrderPostingRow>> {
+        let mut filter = serde_json::Map::new();
+        filter.insert("since".into(), json!(since));
+        filter.insert("to".into(), json!(to));
+        if !status.trim().is_empty() {
+            filter.insert("status".into(), json!(status.trim()));
+        }
+
+        let target_limit = limit.clamp(1, 5000);
+        let page_limit = target_limit.min(1000);
+        let mut offset = 0;
+        let mut rows = Vec::new();
+        loop {
+            let data = self
+                .request_json(
+                    "/v2/posting/fbo/list",
+                    json!({
+                        "dir": "DESC",
+                        "filter": filter,
+                        "limit": page_limit,
+                        "offset": offset,
+                        "with": {
+                            "analytics_data": false,
+                            "financial_data": true
+                        }
+                    }),
+                )
+                .await?;
+            let postings = extract_fbo_postings(&data);
+            let received = postings.len() as u32;
+            rows.extend(
+                postings
+                    .into_iter()
+                    .filter_map(|posting| order_posting_row(posting, "fbo")),
+            );
+            if rows.len() >= target_limit as usize || !fbo_list_has_next(&data) || received == 0 {
+                break;
+            }
+            offset += page_limit;
+        }
+        rows.truncate(target_limit as usize);
+        Ok(rows)
+    }
+
+    pub async fn fbs_posting_row(&self, posting_number: &str) -> Result<OrderPostingRow> {
+        let data = self.fbs_posting_detail(posting_number, true).await?;
+        let item = extract_single_fbs_posting(&data).context("Ozon 未返回该货件详情")?;
+        order_posting_row(item, "fbs").context("无法解析 Ozon 货件详情")
+    }
+
+    pub async fn ship_fbs_posting(&self, posting_number: &str) -> Result<Value> {
+        let data = self.fbs_posting_detail(posting_number, true).await?;
+        let item = extract_single_fbs_posting(&data).context("Ozon 未返回该货件详情")?;
+        let products = item
+            .get("products")
+            .and_then(Value::as_array)
+            .context("Ozon 货件详情缺少商品列表，无法备货")?;
+        let package_products = products
+            .iter()
+            .map(|product| {
+                let product_id = product
+                    .get("product_id")
+                    .or_else(|| product.get("productId"))
+                    .and_then(value_as_i64)
+                    .context("Ozon 货件商品缺少 product_id，无法调用备货接口")?;
+                let quantity = product_quantity(product);
+                if quantity <= 0 {
+                    anyhow::bail!("Ozon 货件商品数量无效，无法调用备货接口");
+                }
+                Ok(json!({
+                    "product_id": product_id,
+                    "quantity": quantity
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if package_products.is_empty() {
+            anyhow::bail!("Ozon 货件没有可备货商品");
+        }
+        self.request_json(
+            "/v4/posting/fbs/ship",
+            json!({
+                "posting_number": posting_number,
+                "packages": [
+                    {
+                        "products": package_products
+                    }
+                ]
+            }),
+        )
+        .await
     }
 
     pub async fn import_products(&self, items: Vec<Value>) -> Result<Value> {
         self.request_json("/v3/product/import", json!({ "items": items }))
             .await
+    }
+
+    pub async fn import_product_pictures(
+        &self,
+        product_id: i64,
+        image_urls: Vec<String>,
+    ) -> Result<Value> {
+        self.request_json(
+            "/v1/product/pictures/import",
+            json!({
+                "product_id": product_id,
+                "images": image_urls,
+            }),
+        )
+        .await
+    }
+
+    pub async fn product_pictures_info(&self, product_ids: Vec<i64>) -> Result<Value> {
+        let ids = product_ids
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
+        self.request_json("/v2/product/pictures/info", json!({ "product_id": ids }))
+            .await
+    }
+
+    pub async fn product_picture_import_status(&self, product_id: i64) -> Result<Value> {
+        self.request_json(
+            "/v1/product/pictures/info",
+            json!({ "product_id": product_id }),
+        )
+        .await
     }
 
     pub async fn list_actions(&self) -> Result<Value> {
@@ -1017,9 +1265,25 @@ fn extract_fbs_postings(data: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-fn order_posting_row(item: Value) -> Option<OrderPostingRow> {
+fn extract_fbo_postings(data: &Value) -> Vec<Value> {
+    extract_fbs_postings(data)
+}
+
+fn extract_single_fbs_posting(data: &Value) -> Option<Value> {
+    data.pointer("/result/posting")
+        .or_else(|| data.pointer("/result"))
+        .or_else(|| data.get("posting"))
+        .cloned()
+        .or_else(|| extract_fbs_postings(data).into_iter().next())
+}
+
+fn order_posting_row(mut item: Value, posting_kind: &str) -> Option<OrderPostingRow> {
+    if let Some(object) = item.as_object_mut() {
+        object.insert("posting_kind".into(), json!(posting_kind));
+    }
     let posting_number = item
         .get("posting_number")
+        .or_else(|| item.get("postingNumber"))
         .and_then(Value::as_str)
         .unwrap_or_default()
         .trim()
@@ -1032,6 +1296,10 @@ fn order_posting_row(item: Value) -> Option<OrderPostingRow> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let product_rows = products
+        .iter()
+        .filter_map(order_posting_product)
+        .collect::<Vec<_>>();
     let offer_ids = products
         .iter()
         .filter_map(|product| product.get("offer_id").and_then(Value::as_str))
@@ -1039,32 +1307,204 @@ fn order_posting_row(item: Value) -> Option<OrderPostingRow> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .collect::<Vec<_>>();
+    let products_count = product_rows
+        .iter()
+        .map(|product| product.quantity.max(0) as usize)
+        .sum::<usize>()
+        .max(products.len());
     Some(OrderPostingRow {
         shop_id: None,
         shop_name: None,
+        posting_kind: Some(posting_kind.to_string()),
         posting_number,
         order_number: item
             .get("order_number")
+            .or_else(|| item.get("orderNumber"))
             .and_then(Value::as_str)
             .map(str::to_string),
-        order_id: item.get("order_id").and_then(value_as_i64),
+        order_id: item
+            .get("order_id")
+            .or_else(|| item.get("orderId"))
+            .and_then(value_as_i64),
         status: item
             .get("status")
             .and_then(Value::as_str)
             .map(str::to_string),
         in_process_at: item
             .get("in_process_at")
+            .or_else(|| item.get("created_at"))
+            .or_else(|| item.get("createdAt"))
             .and_then(Value::as_str)
             .map(str::to_string),
         shipment_date: item
             .get("shipment_date")
+            .or_else(|| item.get("shipmentDate"))
+            .or_else(|| item.get("delivered_at"))
+            .or_else(|| item.get("deliveredAt"))
+            .or_else(|| item.get("delivering_date"))
+            .or_else(|| {
+                item.get("delivery_method")
+                    .and_then(|value| value.get("tpl_integration_type"))
+            })
             .and_then(Value::as_str)
             .map(str::to_string),
-        products_count: products.len(),
+        warehouse_name: posting_warehouse_name(&item),
+        tracking_number: posting_tracking_number(&item),
+        products_count,
         offer_ids,
+        products: Some(product_rows),
+        image_url: posting_image_url(&item),
         sales_amount: posting_sales_amount(&item),
         currency_code: posting_currency_code(&item),
+        synced_at: None,
+        downloaded_at: None,
+        download_output_path: None,
+        raw_json: Some(item),
     })
+}
+
+fn order_posting_product(product: &Value) -> Option<OrderPostingProduct> {
+    let offer_id = product
+        .get("offer_id")
+        .or_else(|| product.get("offerId"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if offer_id.is_empty() {
+        return None;
+    }
+    Some(OrderPostingProduct {
+        product_id: product
+            .get("product_id")
+            .or_else(|| product.get("productId"))
+            .and_then(value_as_i64),
+        offer_id,
+        name: product
+            .get("name")
+            .or_else(|| product.get("title"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        quantity: product_quantity(product),
+        price: product
+            .get("price")
+            .or_else(|| product.get("offer_price"))
+            .or_else(|| product.get("offerPrice"))
+            .or_else(|| product.get("total_price"))
+            .or_else(|| product.get("totalPrice"))
+            .and_then(value_as_f64),
+        currency_code: product
+            .get("currency_code")
+            .or_else(|| product.get("currencyCode"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        image_url: product_image_url(product),
+    })
+}
+
+fn product_quantity(product: &Value) -> i64 {
+    product
+        .get("quantity")
+        .or_else(|| product.get("qty"))
+        .or_else(|| product.get("count"))
+        .and_then(value_as_i64)
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn posting_image_url(item: &Value) -> Option<String> {
+    item.get("products")
+        .and_then(Value::as_array)
+        .and_then(|products| products.iter().find_map(product_image_url))
+}
+
+fn product_image_url(product: &Value) -> Option<String> {
+    for key in [
+        "primary_image",
+        "primaryImage",
+        "image",
+        "image_url",
+        "imageUrl",
+        "photo",
+        "picture",
+    ] {
+        if let Some(value) = product.get(key).and_then(Value::as_str) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    for key in ["images", "pictures", "photos"] {
+        if let Some(value) = product
+            .get(key)
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items.iter().find_map(|item| {
+                    item.as_str()
+                        .or_else(|| item.get("url").and_then(Value::as_str))
+                        .or_else(|| item.get("file_name").and_then(Value::as_str))
+                })
+            })
+        {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn posting_warehouse_name(item: &Value) -> Option<String> {
+    for path in [
+        "/delivery_method/warehouse",
+        "/delivery_method/warehouse_name",
+        "/delivery_method/warehouseName",
+        "/delivery_method/name",
+        "/analytics_data/warehouse_name",
+        "/analytics_data/warehouseName",
+        "/warehouse/name",
+    ] {
+        if let Some(value) = item.pointer(path).and_then(Value::as_str) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    item.get("warehouse_name")
+        .or_else(|| item.get("warehouseName"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn posting_tracking_number(item: &Value) -> Option<String> {
+    for key in ["tracking_number", "trackingNumber", "tpl_tracking_number"] {
+        if let Some(value) = item.get(key).and_then(Value::as_str) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    for path in [
+        "/tracking_number",
+        "/analytics_data/tracking_number",
+        "/analytics_data/trackingNumber",
+        "/delivery_method/tracking_number",
+        "/delivery_method/trackingNumber",
+    ] {
+        if let Some(value) = item.pointer(path).and_then(Value::as_str) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn posting_sales_amount(item: &Value) -> Option<f64> {
@@ -1078,7 +1518,7 @@ fn posting_sales_amount(item: &Value) -> Option<f64> {
             .or_else(|| product.get("total_price"))
             .and_then(value_as_f64)
         {
-            total += price;
+            total += price * product_quantity(product) as f64;
             found = true;
         }
     }
@@ -1104,6 +1544,10 @@ fn fbs_list_has_next(data: &Value) -> bool {
         .or_else(|| data.get("has_next"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+fn fbo_list_has_next(data: &Value) -> bool {
+    fbs_list_has_next(data)
 }
 
 fn parse_categories(data: &Value) -> Vec<CategoryOption> {
@@ -1512,10 +1956,130 @@ fn humanize_ozon_error(text: &str) -> String {
     }
 }
 
+fn parse_product_upload_quota(data: &Value) -> Result<OzonUploadQuota> {
+    let root = data.get("result").unwrap_or(data);
+    let daily_create_limit = required_quota_value(root, "daily_create", "limit")?;
+    let daily_create_usage = required_quota_value(root, "daily_create", "usage")?;
+    let daily_update_limit = required_quota_value(root, "daily_update", "limit")?;
+    let daily_update_usage = required_quota_value(root, "daily_update", "usage")?;
+    let total_limit = required_quota_value(root, "total", "limit")?;
+    let total_usage = required_quota_value(root, "total", "usage")?;
+    let reset_at = optional_reset_at(root, "daily_create")?
+        .or(optional_reset_at(root, "daily_update")?)
+        .or(optional_reset_at(root, "total")?);
+
+    Ok(OzonUploadQuota {
+        daily_create_limit,
+        daily_create_usage,
+        daily_create_remaining: daily_create_limit.saturating_sub(daily_create_usage),
+        daily_update_limit,
+        daily_update_usage,
+        daily_update_remaining: daily_update_limit.saturating_sub(daily_update_usage),
+        total_limit,
+        total_usage,
+        total_remaining: total_limit.saturating_sub(total_usage),
+        reset_at,
+        operation_limits: root.get("operation_limits").cloned(),
+        fetched_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+fn required_quota_value(root: &Value, section: &str, field: &str) -> Result<u64> {
+    root.get(section)
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("{section}.{field} must be a non-negative integer"))
+}
+
+fn optional_reset_at(root: &Value, section: &str) -> Result<Option<String>> {
+    match root.get(section).and_then(|value| value.get("reset_at")) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => anyhow::bail!("{section}.reset_at must be a string"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn product_upload_quota_parses_remaining_and_preserves_operation_limits() {
+        let quota = parse_product_upload_quota(&json!({
+            "daily_create": {
+                "limit": 1500,
+                "usage": 6,
+                "reset_at": "2026-07-29T00:00:00Z"
+            },
+            "daily_update": {
+                "limit": 5000,
+                "usage": 12,
+                "reset_at": "2026-07-29T00:00:00Z"
+            },
+            "total": { "limit": 252500, "usage": 210 },
+            "operation_limits": [
+                { "operation": "product_import", "limit": 100 }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(quota.daily_create_limit, 1500);
+        assert_eq!(quota.daily_create_usage, 6);
+        assert_eq!(quota.daily_create_remaining, 1494);
+        assert_eq!(quota.daily_update_limit, 5000);
+        assert_eq!(quota.daily_update_usage, 12);
+        assert_eq!(quota.daily_update_remaining, 4988);
+        assert_eq!(quota.total_limit, 252500);
+        assert_eq!(quota.total_usage, 210);
+        assert_eq!(quota.total_remaining, 252290);
+        assert_eq!(quota.reset_at.as_deref(), Some("2026-07-29T00:00:00Z"));
+
+        let serialized = serde_json::to_value(quota).unwrap();
+        assert_eq!(
+            serialized["operationLimits"],
+            json!([{ "operation": "product_import", "limit": 100 }])
+        );
+    }
+
+    #[test]
+    fn product_upload_quota_uses_saturating_subtraction() {
+        let quota = parse_product_upload_quota(&json!({
+            "daily_create": { "limit": 2, "usage": 3 },
+            "daily_update": { "limit": 4, "usage": 5 },
+            "total": { "limit": 6, "usage": 7 }
+        }))
+        .unwrap();
+
+        assert_eq!(quota.daily_create_remaining, 0);
+        assert_eq!(quota.daily_update_remaining, 0);
+        assert_eq!(quota.total_remaining, 0);
+    }
+
+    #[test]
+    fn product_upload_quota_rejects_invalid_required_values() {
+        let invalid_fixtures = [
+            json!({
+                "daily_create": { "usage": 0 },
+                "daily_update": { "limit": 1, "usage": 0 },
+                "total": { "limit": 1, "usage": 0 }
+            }),
+            json!({
+                "daily_create": { "limit": 1, "usage": 0 },
+                "daily_update": { "limit": 1, "usage": -1 },
+                "total": { "limit": 1, "usage": 0 }
+            }),
+            json!({
+                "daily_create": { "limit": 1, "usage": 0 },
+                "daily_update": { "limit": 1, "usage": 0 },
+                "total": { "limit": "1", "usage": 0 }
+            }),
+        ];
+
+        for fixture in invalid_fixtures {
+            assert!(parse_product_upload_quota(&fixture).is_err());
+        }
+    }
 
     #[test]
     fn parses_top_level_warehouses() {

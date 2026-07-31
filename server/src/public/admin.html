@@ -1,0 +1,2363 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ozon SJSQ 管理后台</title>
+  <style>
+    :root {
+      font-family: Inter, "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif;
+      color: var(--color-text);
+      background: var(--color-bg);
+      font-size: 13px;
+      line-height: 1.5;
+      --color-primary: #1677ff;
+      --color-primary-strong: #0958d9;
+      --color-primary-soft: #e6f4ff;
+      --color-text: #1f2937;
+      --color-muted: #6b7280;
+      --color-subtle: #8a94a6;
+      --color-border: #e5e7eb;
+      --color-border-strong: #d9dee8;
+      --color-bg: #f3f5f9;
+      --color-surface: #ffffff;
+      --color-surface-soft: #f8fafc;
+      --color-danger: #b42318;
+      --color-success: #177245;
+      --shadow-panel: 0 8px 22px rgba(15, 23, 42, 0.045);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; background: var(--color-bg); }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: 0.62; }
+    .admin-shell {
+      display: grid;
+      grid-template-columns: 232px minmax(0, 1fr);
+      min-height: 100vh;
+      background: var(--color-bg);
+    }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      border-right: 1px solid var(--color-border);
+      background: var(--color-surface);
+      padding: 14px 12px;
+    }
+    .brand {
+      display: grid;
+      gap: 2px;
+      min-height: 54px;
+      padding: 6px 8px 16px;
+      border-bottom: 1px solid var(--color-border);
+    }
+    .brand strong { font-size: 16px; }
+    .brand span, .muted { color: var(--color-muted); font-size: 12px; }
+    .nav-list {
+      display: grid;
+      gap: 4px;
+      margin: 12px 0;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 38px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: #4b5563;
+      padding: 0 10px;
+      text-decoration: none;
+      transition: background 0.16s ease, color 0.16s ease;
+    }
+    .nav-item:hover, .nav-item.active {
+      background: var(--color-primary-soft);
+      color: var(--color-primary-strong);
+    }
+    .nav-item.active { font-weight: 600; }
+    .token-box {
+      display: grid;
+      gap: 8px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--color-border);
+    }
+    .main {
+      min-width: 0;
+      width: 100%;
+      max-width: 1680px;
+      padding: 16px 22px 32px;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 54px;
+      margin-bottom: 14px;
+    }
+    h1, h2, h3 { margin: 0; }
+    h1 { font-size: 22px; line-height: 1.25; }
+    h2 { font-size: 16px; line-height: 1.3; }
+    h3 { font-size: 13px; }
+    .message {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      border-radius: 999px;
+      background: #eef6f1;
+      color: var(--color-success);
+      padding: 0 10px;
+      white-space: nowrap;
+    }
+    .message.error {
+      background: #fff2f0;
+      color: var(--color-danger);
+    }
+    .page { display: none; }
+    .page.active { display: grid; gap: 12px; }
+    .panel {
+      border: 1px solid var(--color-border);
+      border-radius: 10px;
+      background: var(--color-surface);
+      padding: 14px;
+      box-shadow: var(--shadow-panel);
+    }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .panel-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .stat {
+      display: grid;
+      gap: 3px;
+      min-height: 76px;
+      border: 1px solid #e7edf5;
+      border-radius: 10px;
+      background: var(--color-surface-soft);
+      padding: 10px;
+    }
+    .stat span { color: var(--color-muted); font-size: 12px; }
+    .stat strong { font-size: 21px; }
+    .field { display: grid; gap: 4px; min-width: 0; }
+    label { color: #4b5563; font-size: 12px; }
+    input, select, textarea {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--color-border-strong);
+      border-radius: 6px;
+      background: var(--color-surface);
+      color: var(--color-text);
+      padding: 4px 9px;
+    }
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.12);
+      outline: 0;
+    }
+    textarea {
+      min-height: 124px;
+      resize: vertical;
+      font-family: Consolas, "Microsoft YaHei UI", monospace;
+      font-size: 12px;
+    }
+    .model-picker {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: center;
+    }
+    .secret-input {
+      font-family: Consolas, "Microsoft YaHei UI", monospace;
+      letter-spacing: 0;
+    }
+    .field-help {
+      color: var(--color-muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .provider-hint {
+      border: 1px solid #d7e8ff;
+      border-radius: 6px;
+      background: #f8fbff;
+      color: #29415f;
+      padding: 8px 10px;
+      line-height: 1.55;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    .primary, .secondary, .danger {
+      min-height: 32px;
+      border-radius: 6px;
+      border: 1px solid var(--color-border-strong);
+      background: var(--color-surface);
+      color: var(--color-text);
+      padding: 0 10px;
+    }
+    .primary {
+      border-color: var(--color-primary);
+      background: var(--color-primary);
+      color: #fff;
+    }
+    .secondary:hover { border-color: var(--color-primary); color: var(--color-primary-strong); }
+    .danger {
+      border-color: #ffd5d1;
+      background: #fff2f0;
+      color: var(--color-danger);
+    }
+    .filters {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(120px, 180px)) auto;
+      gap: 8px;
+      align-items: end;
+    }
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--color-border);
+      border-radius: 8px;
+      background: var(--color-surface);
+    }
+    table {
+      width: 100%;
+      min-width: 820px;
+      border-collapse: collapse;
+    }
+    th, td {
+      border-bottom: 1px solid var(--color-border);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: var(--color-surface-soft);
+      color: #526176;
+      font-weight: 600;
+    }
+    tr:last-child td { border-bottom: 0; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      border-radius: 999px;
+      background: #eef2f7;
+      color: #4b5d75;
+      padding: 0 8px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .badge.ok { background: #eef6f1; color: #177245; }
+    .badge.warn { background: #fff4df; color: #9a5d00; }
+    .badge.bad { background: #fff2f0; color: #b42318; }
+    .pager {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      color: #526176;
+      font-size: 12px;
+    }
+    .thumb {
+      width: 48px;
+      height: 48px;
+      border: 1px solid #e1e8f0;
+      border-radius: 6px;
+      background: #f8fafc;
+      object-fit: cover;
+    }
+    .preview-thumb {
+      width: 96px;
+      height: 128px;
+      border: 1px solid #e1e8f0;
+      border-radius: 6px;
+      background: #f8fafc;
+      object-fit: cover;
+    }
+    .order-product {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      min-width: 220px;
+      margin-bottom: 8px;
+    }
+    .order-product:last-child { margin-bottom: 0; }
+    .order-product-thumb,
+    .order-product-empty {
+      width: 42px;
+      height: 42px;
+      border: 1px solid #e1e8f0;
+      border-radius: 6px;
+      background: #f8fafc;
+      object-fit: cover;
+      flex: 0 0 auto;
+    }
+    .order-product-empty {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #8a9ab0;
+      font-size: 12px;
+    }
+    .mockup-form {
+      grid-template-columns: minmax(120px, 160px) repeat(4, minmax(140px, 1fr)) auto;
+    }
+    .mockup-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .file-button {
+      position: relative;
+      overflow: hidden;
+    }
+    .file-button input {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+    .output {
+      min-height: 170px;
+      margin-top: 10px;
+    }
+    .nowrap { white-space: nowrap; }
+    .break { overflow-wrap: anywhere; }
+    @media (max-width: 980px) {
+      .admin-shell { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid #dfe6ef; }
+      .nav-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .grid, .grid.two, .grid.three { grid-template-columns: 1fr; }
+      .filters { grid-template-columns: 1fr; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+    }
+      /* Data-management redesign overrides */
+    :root { --color-primary: #2463c8; --color-primary-strong: #173f86; --color-primary-soft: #eaf2ff; --color-bg: #f5f7fb; --color-surface-soft: #f8fafc; --color-text: #172033; --color-muted: #68758a; --color-border: #e3e8f0; --shadow-panel: 0 10px 28px rgba(20, 39, 73, .055); }
+    body { background: radial-gradient(circle at top right, #edf4ff 0, transparent 31rem), var(--color-bg); }
+    .admin-shell { grid-template-columns: 252px minmax(0, 1fr); }
+    .sidebar { padding: 20px 14px; background: #fff; }
+    .brand { min-height: 66px; padding: 6px 10px 18px; }
+    .brand strong { font-size: 18px; letter-spacing: -.35px; }
+    .nav-list { gap: 3px; margin: 18px 0; }
+    .nav-group-label { display:block; margin: 17px 10px 6px; color:#97a3b5; font-size:10px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; }
+    .nav-group-label:first-child { margin-top: 0; }
+    .nav-item { min-height: 42px; border-radius: 8px; padding: 0 11px; font-size: 13px; }
+    .nav-item:hover, .nav-item.active { background: var(--color-primary-soft); color: var(--color-primary-strong); }
+    .main { max-width: 1780px; padding: 26px 30px 40px; }
+    .topbar { min-height: 62px; margin-bottom: 20px; }
+    h1 { font-size: 25px; letter-spacing: -.55px; }
+    .panel { border-radius: 12px; padding: 18px; box-shadow: var(--shadow-panel); }
+    .panel-header { margin-bottom: 14px; }
+    .stat { min-height: 92px; padding: 14px; border-radius: 11px; background: linear-gradient(145deg, #fff, #f8fbff); }
+    .stat strong { font-size: 24px; font-variant-numeric: tabular-nums; }
+    .filters { gap: 10px; padding: 14px; border: 1px solid var(--color-border); border-radius: 10px; background: #fbfcfe; }
+    input, select, textarea { min-height: 38px; border-radius: 7px; }
+    button { border-radius: 7px; min-height: 36px; font-weight: 600; }
+    .table-wrap { border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden; }
+    table { font-variant-numeric: tabular-nums; }
+    th { background: #f7f9fc; color: #59677d; font-size: 12px; }
+    td, th { padding: 12px 13px; }
+    .pager { margin-top: 14px; padding-top: 2px; }
+    .message { box-shadow: 0 3px 10px rgba(20,39,73,.06); }
+    @media (max-width: 980px) { .admin-shell { grid-template-columns: 1fr; } .sidebar { position: static; height:auto; } .nav-list { grid-template-columns: repeat(2,minmax(0,1fr)); } .nav-group-label { grid-column: 1 / -1; } .main { padding: 18px 14px 28px; } }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <strong>Ozon SJSQ</strong>
+        <span>管理后台</span>
+      </div>
+      <nav class="nav-list" aria-label="管理后台导航">
+        <span class="nav-group-label">工作台</span>
+        <a class="nav-item" data-page-link="overview" href="/admin/ui/overview"><span>概览</span><span>›</span></a>
+        <span class="nav-group-label">账户与授权</span>
+        <a class="nav-item" data-page-link="users" href="/admin/ui/users"><span>用户与会员</span><span>›</span></a>
+        <a class="nav-item" data-page-link="licenses" href="/admin/ui/licenses"><span>授权码</span><span>›</span></a>
+        <span class="nav-group-label">内容与业务</span>
+        <a class="nav-item" data-page-link="gallery" href="/admin/ui/gallery"><span>图库资产</span><span>›</span></a>
+        <a class="nav-item" data-page-link="featured" href="/admin/ui/featured"><span>精品库</span><span>›</span></a>
+        <a class="nav-item" data-page-link="orders" href="/admin/ui/orders"><span>订单与店铺</span><span>›</span></a>
+        <a class="nav-item" data-page-link="mockups" href="/admin/ui/mockups"><span>样机管理</span><span>›</span></a>
+        <span class="nav-group-label">系统配置</span>
+        <a class="nav-item" data-page-link="ai" href="/admin/ui/ai"><span>AI 设置</span><span>›</span></a>
+        <a class="nav-item" data-page-link="imageRules" href="/admin/ui/imageRules"><span>商品比例规则</span><span>›</span></a>
+      </nav>
+      <div class="token-box">
+        <div class="field">
+          <label>ADMIN_TOKEN</label>
+          <input id="adminToken" type="password" autocomplete="current-password" placeholder="管理员口令" />
+        </div>
+        <div class="toolbar">
+          <button class="primary" id="saveToken">保存</button>
+          <button class="secondary" id="clearToken">清除</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">概览</h1>
+          <div id="pageSubtitle" class="muted">关键运营数据</div>
+        </div>
+        <span id="message" class="message">未连接</span>
+      </header>
+
+      <section id="page-overview" class="page">
+        <div class="panel">
+          <div class="filters">
+            <div class="field">
+              <label>订单统计周期</label>
+              <select id="overviewPeriod">
+                <option value="7d">近 7 天</option>
+                <option value="30d">近 30 天</option>
+                <option value="1y">近 1 年</option>
+                <option value="all">全部</option>
+              </select>
+            </div>
+            <button class="primary" id="loadOverview">刷新概览</button>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="stat"><span>注册用户</span><strong id="statUsers">-</strong></div>
+          <div class="stat"><span>有效会员</span><strong id="statActiveMembers">-</strong></div>
+          <div class="stat"><span>7 日新增用户</span><strong id="statNewUsers7d">-</strong></div>
+          <div class="stat"><span>未使用授权码</span><strong id="statUnusedKeys">-</strong></div>
+          <div class="stat"><span>图库图片</span><strong id="statAssets">-</strong></div>
+          <div class="stat"><span>图库 SKU</span><strong id="statAssetSkus">-</strong></div>
+          <div class="stat"><span>7 日新增图片</span><strong id="statNewAssets7d">-</strong></div>
+          <div class="stat"><span>图库容量</span><strong id="statAssetBytes">-</strong></div>
+          <div class="stat"><span>订单量</span><strong id="statOrders">-</strong></div>
+          <div class="stat"><span>销售额</span><strong id="statSales">-</strong></div>
+          <div class="stat"><span>出单用户</span><strong id="statOrderingUsers">-</strong></div>
+          <div class="stat"><span>出单店铺</span><strong id="statOrderingShops">-</strong></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>用户订单排行</h2><button class="secondary" data-jump="orders">查看订单</button></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>用户</th><th>单量</th><th>销售额</th><th>最近出单</th></tr></thead>
+              <tbody id="userOrderStatsBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="grid two">
+          <div class="panel">
+            <div class="panel-header"><h2>最近注册</h2><button class="secondary" data-jump="users">查看用户</button></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>手机号</th><th>会员</th><th>注册时间</th></tr></thead>
+                <tbody id="recentUsersBody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><h2>最近授权码</h2><button class="secondary" data-jump="licenses">查看授权码</button></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>授权码</th><th>套餐</th><th>状态</th><th>绑定用户</th></tr></thead>
+                <tbody id="recentKeysBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-users" class="page">
+        <div class="panel">
+          <div class="filters">
+            <div class="field">
+              <label>搜索</label>
+              <input id="usersKeyword" placeholder="手机号 / 昵称" />
+            </div>
+            <div class="field">
+              <label>会员状态</label>
+              <select id="usersMembership">
+                <option value="all">全部</option>
+                <option value="active">有效会员</option>
+                <option value="expired">已过期</option>
+                <option value="none">未开通</option>
+              </select>
+            </div>
+                        <div class="field"><label>删除状态</label><select id="usersDeletionState"><option value="active">正常</option><option value="deleted">已删除</option><option value="all">全部</option></select></div>
+<div class="field">
+              <label>每页</label>
+              <select id="usersLimit">
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+            <button class="primary" id="loadUsers">查询</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>用户列表</h2><span id="usersSummary" class="muted">-</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>手机号</th>
+                  <th>会员</th>
+                  <th>到期时间</th>
+                  <th>设备</th>
+                  <th>店铺 / 图库使用</th>
+                  <th>图库容量</th>
+                  <th>注册 / 登录</th>
+                  <th>设备在线</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="usersBody"></tbody>
+            </table>
+          </div>
+          <div id="usersPager" class="pager"></div>
+        </div>
+      </section>
+
+      <section id="page-licenses" class="page">
+        <div class="panel">
+          <div class="panel-header"><h2>生成授权码</h2><span class="muted">未使用可复制，兑换后隐藏完整内容</span></div>
+          <div class="grid three">
+            <div class="field">
+              <label>套餐</label>
+              <select id="plan">
+                <option value="monthly">月卡 99</option>
+                <option value="quarterly">季卡 249</option>
+                <option value="yearly">年卡 899</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>数量</label>
+              <input id="keyCount" type="number" min="1" max="200" value="10" />
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button class="primary" id="createKeys">生成</button>
+            </div>
+          </div>
+          <textarea id="keysOutput" class="output" readonly placeholder="授权码会显示在这里"></textarea>
+        </div>
+        <div class="panel">
+          <div class="filters">
+            <div class="field">
+              <label>搜索</label>
+              <input id="keysKeyword" placeholder="授权码前缀 / 绑定手机号" />
+            </div>
+            <div class="field">
+              <label>状态</label>
+              <select id="keysStatus">
+                <option value="all">全部</option>
+                <option value="unused">未使用</option>
+                <option value="redeemed">已兑换</option>
+                <option value="disabled">已禁用</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>套餐</label>
+              <select id="keysPlan">
+                <option value="all">全部</option>
+                <option value="monthly">月卡</option>
+                <option value="quarterly">季卡</option>
+                <option value="yearly">年卡</option>
+              </select>
+            </div>
+                        <div class="field"><label>删除状态</label><select id="keysDeletionState"><option value="active">正常</option><option value="deleted">已删除</option><option value="all">全部</option></select></div>
+<button class="primary" id="loadKeys">查询</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <h2>授权码列表</h2>
+            <div class="panel-actions">
+              <button class="secondary" id="copyUnusedKeys" type="button">复制本页未使用授权码</button>
+              <span id="keysSummary" class="muted">-</span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>授权码</th><th>套餐</th><th>价格</th><th>状态</th><th>绑定用户</th><th>生成 / 兑换 / 到期</th><th>操作</th></tr></thead>
+              <tbody id="keysBody"></tbody>
+            </table>
+          </div>
+          <div id="keysPager" class="pager"></div>
+        </div>
+      </section>
+
+      <section id="page-ai" class="page">
+        <div class="panel">
+          <div class="grid">
+            <div class="field">
+              <label>图片 Provider</label>
+              <input id="imageProvider" value="pixel" />
+            </div>
+            <div class="field">
+              <label>图片接口地址</label>
+              <input id="imageBaseUrl" value="https://ai-pixel.online/v1" />
+            </div>
+            <div class="field">
+              <label>图片模型</label>
+              <div class="model-picker">
+                <input id="imageModel" value="gpt-image-2" list="imageModelOptions" placeholder="可手动输入或刷新后选择" />
+                <button class="secondary" id="loadImageModels" type="button">加载模型</button>
+              </div>
+              <datalist id="imageModelOptions"></datalist>
+              <span id="imageModelStatus" class="field-help">保存接口和 Key 后可加载可用模型。</span>
+            </div>
+            <div class="field">
+              <label>图片 API Key</label>
+              <input id="imageApiKey" class="secret-input" placeholder="留空表示不修改" autocomplete="off" />
+              <span id="imageKeyStatus" class="muted">未读取</span>
+            </div>
+            <div class="field">
+              <label>文案 Provider</label>
+              <input id="textProvider" value="xiaoqian" />
+            </div>
+            <div class="field">
+              <label>文案接口地址</label>
+              <input id="textBaseUrl" value="https://xiaoqian.art/v1" />
+            </div>
+            <div class="field">
+              <label>文案模型</label>
+              <div class="model-picker">
+                <input id="textModel" value="gpt-5-high" list="textModelOptions" placeholder="可手动输入或刷新后选择" />
+                <button class="secondary" id="loadTextModels" type="button">加载模型</button>
+              </div>
+              <datalist id="textModelOptions"></datalist>
+              <span id="textModelStatus" class="field-help">标题生成使用这里的文案模型。</span>
+            </div>
+            <div class="field">
+              <label>文案 API Key</label>
+              <input id="textApiKey" class="secret-input" placeholder="留空表示不修改" autocomplete="off" />
+              <span id="textKeyStatus" class="muted">未读取</span>
+            </div>
+          </div>
+          <p class="provider-hint">
+            当前支持 OpenAI 兼容接口的 /models 自动发现，Ollama 会读取 /api/tags；不支持模型列表的服务仍可手动输入模型名。保存后的 Key 会脱敏显示，星号内容不会覆盖真实 Key。
+          </p>
+          <div class="grid three" style="margin-top: 10px;">
+            <div class="field">
+              <label>图片默认 Prompt</label>
+              <textarea id="imagePromptTemplate"></textarea>
+            </div>
+            <div class="field">
+              <label>标题默认 Prompt</label>
+              <textarea id="titlePromptTemplate"></textarea>
+            </div>
+            <div class="field">
+              <label>描述默认 Prompt</label>
+              <textarea id="descriptionPromptTemplate"></textarea>
+            </div>
+          </div>
+          <div class="toolbar">
+            <button class="primary" id="saveAiSettings">保存 AI 设置</button>
+            <button class="secondary" id="loadAiSettings">刷新</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-imageRules" class="page">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>商品类型与图片比例</h2>
+              <div class="muted">用户上传图片时只能选择这里启用的商品类型和精确比例。</div>
+            </div>
+            <button id="loadImageRules" class="secondary">刷新</button>
+          </div>
+          <div class="filters">
+            <div class="field">
+              <label>商品类型</label>
+              <input id="imageRuleProductType" placeholder="法兰绒毛毯" />
+            </div>
+            <div class="field">
+              <label>图片比例</label>
+              <input id="imageRuleAspectRatio" placeholder="2:3" />
+            </div>
+            <div class="field">
+              <label>状态</label>
+              <select id="imageRuleEnabled">
+                <option value="true">启用</option>
+                <option value="false">停用</option>
+              </select>
+            </div>
+            <button id="saveImageRule" class="primary">保存规则</button>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header"><h2>已维护规则</h2><span id="imageRulesSummary" class="muted">-</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>商品类型</th><th>比例</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
+              <tbody id="imageRulesBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="page-featured" class="page">
+        <div class="panel">
+          <div class="filters">
+            <div class="field"><label>搜索</label><input id="featuredKeyword" placeholder="SKU / 文件名 / 用户" /></div>
+            <div class="field"><label>状态</label><select id="featuredStatus"><option value="all">全部</option><option value="active">已上架</option><option value="review">待审核</option><option value="hidden">已隐藏</option></select></div>
+            <div class="field"><label>删除状态</label><select id="featuredDeletionState"><option value="active">正常</option><option value="deleted">已删除</option><option value="all">全部</option></select></div>
+            <div class="field"><label>每页</label><select id="featuredLimit"><option value="10">10</option><option value="20">20</option><option value="50">50</option></select></div>
+            <button class="primary" id="loadFeatured">查询</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>精品库</h2><span id="featuredSummary" class="muted">-</span></div>
+          <div class="table-wrap"><table><thead><tr><th>原图 / 套图</th><th>SKU</th><th>用户</th><th>状态</th><th>出单数据</th><th>备注</th><th>操作</th></tr></thead><tbody id="featuredBody"></tbody></table></div>
+          <div id="featuredPager" class="pager"></div>
+        </div>
+      </section>
+
+      <section id="page-gallery" class="page">
+        <div class="panel">
+          <div class="filters">
+            <div class="field">
+              <label>搜索</label>
+              <input id="galleryKeyword" placeholder="SKU / 文件名" />
+            </div>
+            <div class="field">
+              <label>比例</label>
+              <select id="galleryRatio">
+                <option value="all">全部</option>
+                <option value="portrait">3:4</option>
+                <option value="square">1:1</option>
+                <option value="landscape">4:3</option>
+                <option value="wide">16:9</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>上传用户</label>
+              <select id="galleryUser"><option value="">全部用户</option></select>
+            </div>
+            <div class="field">
+              <label>套图</label>
+              <select id="galleryMockupStatus">
+                <option value="all">全部</option>
+                <option value="with">有套图</option>
+                <option value="without">无套图</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>出单</label>
+              <select id="galleryOrderedStatus">
+                <option value="all">全部</option>
+                <option value="ordered">出过单</option>
+                <option value="not_ordered">未出单</option>
+              </select>
+            </div>
+                        <div class="field"><label>删除状态</label><select id="galleryDeletionState"><option value="active">正常</option><option value="deleted">已删除</option><option value="all">全部</option></select></div>
+<div class="field">
+              <label>每页</label>
+              <select id="galleryLimit">
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+            <button class="primary" id="loadGallery">查询</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>云图库</h2><span id="gallerySummary" class="muted">-</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>原图 / 套图</th><th>SKU / 标题</th><th>比例</th><th>尺寸 / 大小</th><th>上传用户</th><th>使用 / 出单</th><th>上传时间</th><th>操作</th></tr></thead>
+              <tbody id="galleryBody"></tbody>
+            </table>
+          </div>
+          <div id="galleryPager" class="pager"></div>
+        </div>
+      </section>
+
+      <section id="page-orders" class="page">
+        <div class="panel">
+          <div class="filters">
+            <div class="field">
+              <label>周期</label>
+              <select id="ordersPeriod">
+                <option value="today" selected>今天</option>
+                <option value="7d">近 7 天</option>
+                <option value="30d">近 30 天</option>
+                <option value="1y">近 1 年</option>
+                <option value="all">全部</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>开始日期</label>
+              <input id="ordersDateFrom" type="date" />
+            </div>
+            <div class="field">
+              <label>结束日期</label>
+              <input id="ordersDateTo" type="date" />
+            </div>
+            <div class="field">
+              <label>用户</label>
+              <select id="ordersUser"><option value="">全部用户</option></select>
+            </div>
+            <div class="field">
+              <label>店铺</label>
+              <select id="ordersShop"><option value="">全部店铺</option></select>
+            </div>
+            <div class="field">
+              <label>品类</label>
+              <select id="ordersCategory"><option value="">全部品类</option></select>
+            </div>
+            <div class="field">
+              <label>状态</label>
+              <select id="ordersStatus"><option value="">全部状态</option></select>
+            </div>
+            <div class="field">
+              <label>关键词</label>
+              <input id="ordersKeyword" placeholder="货件号 / 货号 / 店铺 / 手机号" />
+            </div>
+            <div class="field">
+              <label>每页</label>
+              <select id="ordersLimit">
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+            <button class="primary" id="loadOrders">查询</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>订单信息</h2><span id="ordersSummary" class="muted">-</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>用户 / 店铺</th><th>货件</th><th>状态</th><th>时间</th><th>货号 / 商品</th><th>品类</th><th>销售额</th><th>同步</th></tr></thead>
+              <tbody id="ordersBody"></tbody>
+            </table>
+          </div>
+          <div id="ordersPager" class="pager"></div>
+        </div>
+      </section>
+
+      <section id="page-mockups" class="page">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>新增 / 编辑样机</h2>
+              <span class="muted">上传 PSD 先保存源文件；发布前必须有可渲染模板并生成测试预览。</span>
+            </div>
+            <button class="secondary" id="loadMockups">刷新</button>
+          </div>
+          <div class="filters mockup-form">
+            <div class="field">
+              <label>样机编号</label>
+              <input id="mockupId" placeholder="ganfamao" />
+            </div>
+            <div class="field">
+              <label>名称</label>
+              <input id="mockupName" placeholder="干发帽样机" />
+            </div>
+            <div class="field">
+              <label>产品类型</label>
+              <input id="mockupProductType" placeholder="干发帽 / 浴帽" />
+            </div>
+            <div class="field">
+              <label>原图比例</label>
+              <input id="mockupAspectRatio" placeholder="1:1" />
+            </div>
+            <div class="field">
+              <label>说明</label>
+              <input id="mockupDescription" placeholder="给用户看的样机说明" />
+            </div>
+            <button class="primary" id="saveMockup">保存样机</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <h2>样机列表</h2>
+            <span id="mockupsSummary" class="muted">-</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>预览</th>
+                  <th>样机</th>
+                  <th>状态</th>
+                  <th>PSD / 模板</th>
+                  <th>测试结果</th>
+                  <th>更新时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="mockupsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const TOKEN_KEY = "ozon_sjsq_admin_token";
+    const pageMeta = {
+      overview: ["概览", "关键运营数据"],
+      users: ["用户", "注册用户、会员状态、设备解绑"],
+      licenses: ["授权码", "生成、筛选和追踪授权码"],
+      ai: ["AI 设置", "云端模型、接口和默认 Prompt"],
+      imageRules: ["商品比例", "维护商品类型和精确图片比例"],
+      gallery: ["云图库", "图片资产和使用情况"],
+      featured: ["精品库", "汇总所有用户已出单的精品原图"],
+      orders: ["订单信息", "按用户、店铺、品类和状态查看订单"],
+      mockups: ["样机管理", "上传 PSD、测试预览、发布和停用样机"],
+    };
+    const state = {
+      users: { offset: 0, limit: 10, total: 0 },
+      keys: { offset: 0, limit: 10, total: 0, visible: [] },
+      gallery: { offset: 0, limit: 10, total: 0 },
+      orders: { offset: 0, limit: 10, total: 0 },
+      featured: { offset: 0, limit: 10, total: 0 },
+      imageRules: { total: 0 },
+      mockups: { total: 0 },
+    };
+    const pageOrder = ["overview", "users", "licenses", "ai", "imageRules", "gallery", "featured", "orders", "mockups"];
+    const loadedPages = new Set();
+    const loadingPages = new Map();
+    const warmupTimers = [];
+    const message = document.getElementById("message");
+    const adminToken = document.getElementById("adminToken");
+    const keysOutput = document.getElementById("keysOutput");
+    const aiFields = {
+      imageProvider: document.getElementById("imageProvider"),
+      imageBaseUrl: document.getElementById("imageBaseUrl"),
+      imageModel: document.getElementById("imageModel"),
+      imageModelOptions: document.getElementById("imageModelOptions"),
+      imageModelStatus: document.getElementById("imageModelStatus"),
+      imageApiKey: document.getElementById("imageApiKey"),
+      imageKeyStatus: document.getElementById("imageKeyStatus"),
+      textProvider: document.getElementById("textProvider"),
+      textBaseUrl: document.getElementById("textBaseUrl"),
+      textModel: document.getElementById("textModel"),
+      textModelOptions: document.getElementById("textModelOptions"),
+      textModelStatus: document.getElementById("textModelStatus"),
+      textApiKey: document.getElementById("textApiKey"),
+      textKeyStatus: document.getElementById("textKeyStatus"),
+      imagePromptTemplate: document.getElementById("imagePromptTemplate"),
+      titlePromptTemplate: document.getElementById("titlePromptTemplate"),
+      descriptionPromptTemplate: document.getElementById("descriptionPromptTemplate"),
+    };
+
+    adminToken.value = localStorage.getItem(TOKEN_KEY) || "";
+    setMessage(adminToken.value ? "已读取管理员口令" : "请填写管理员口令");
+
+    document.querySelectorAll("[data-page-link]").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        navigate(link.dataset.pageLink);
+      });
+    });
+    document.querySelectorAll("[data-jump]").forEach((button) => {
+      button.addEventListener("click", () => navigate(button.dataset.jump));
+    });
+    window.addEventListener("popstate", () => showPage(routePage()));
+
+    document.getElementById("saveToken").onclick = () => {
+      saveAdminToken();
+    };
+    adminToken.addEventListener("keydown", submitOnEnter(saveAdminToken));
+    document.getElementById("clearToken").onclick = () => {
+      localStorage.removeItem(TOKEN_KEY);
+      adminToken.value = "";
+      loadedPages.clear();
+      clearWarmupTimers();
+      setMessage("已清除管理员口令");
+    };
+    document.getElementById("loadUsers").onclick = () => {
+      state.users.offset = 0;
+      loadPageData("users", { force: true });
+    };
+    document.getElementById("usersDeletionState").addEventListener("change", () => { state.users.offset = 0; loadPageData("users", { force: true }); });
+    document.getElementById("usersKeyword").addEventListener("keydown", submitOnEnter(() => {
+      state.users.offset = 0;
+      loadPageData("users", { force: true });
+    }));
+    document.getElementById("createKeys").onclick = createKeys;
+    document.getElementById("loadKeys").onclick = () => {
+      state.keys.offset = 0;
+      loadPageData("licenses", { force: true });
+    };
+    document.getElementById("copyUnusedKeys").onclick = copyUnusedLicenseKeys;
+    document.getElementById("keysDeletionState").addEventListener("change", () => { state.keys.offset = 0; loadPageData("licenses", { force: true }); });
+    document.getElementById("keysKeyword").addEventListener("keydown", submitOnEnter(() => {
+      state.keys.offset = 0;
+      loadPageData("licenses", { force: true });
+    }));
+    document.getElementById("loadAiSettings").onclick = () => loadPageData("ai", { force: true });
+    document.getElementById("saveAiSettings").onclick = saveAiSettings;
+    document.getElementById("loadImageModels").onclick = () => loadAiModels("image");
+    document.getElementById("loadTextModels").onclick = () => loadAiModels("text");
+    document.getElementById("loadImageRules").onclick = () => loadPageData("imageRules", { force: true });
+    document.getElementById("saveImageRule").onclick = saveImageRule;
+    document.getElementById("imageRuleProductType").addEventListener("keydown", submitOnEnter(saveImageRule));
+    document.getElementById("imageRuleAspectRatio").addEventListener("keydown", submitOnEnter(saveImageRule));
+    document.getElementById("loadFeatured").onclick = () => {
+      state.featured.offset = 0;
+      loadPageData("featured", { force: true });
+    };
+    document.getElementById("featuredKeyword").addEventListener("keydown", submitOnEnter(() => {
+      state.featured.offset = 0;
+      loadPageData("featured", { force: true });
+    }));
+    ["featuredStatus", "featuredDeletionState", "featuredLimit"].forEach((id) => {
+      document.getElementById(id).addEventListener("change", () => {
+        state.featured.offset = 0;
+        loadPageData("featured", { force: true });
+      });
+    });    document.getElementById("loadGallery").onclick = () => {
+      state.gallery.offset = 0;
+      loadPageData("gallery", { force: true });
+    };
+    document.getElementById("galleryKeyword").addEventListener("keydown", submitOnEnter(() => {
+      state.gallery.offset = 0;
+      loadPageData("gallery", { force: true });
+    }));
+    ["galleryUser", "galleryMockupStatus", "galleryOrderedStatus", "galleryDeletionState"].forEach((id) => {
+      document.getElementById(id).addEventListener("change", () => {
+        state.gallery.offset = 0;
+        loadPageData("gallery", { force: true });
+      });
+    });
+    document.getElementById("loadOverview").onclick = () => loadPageData("overview", { force: true });
+    document.getElementById("overviewPeriod").addEventListener("change", () => loadPageData("overview", { force: true }));
+    resetOrdersDateRange("today");
+    document.getElementById("loadOrders").onclick = () => {
+      state.orders.offset = 0;
+      loadPageData("orders", { force: true });
+    };
+    document.getElementById("ordersKeyword").addEventListener("keydown", submitOnEnter(() => {
+      state.orders.offset = 0;
+      loadPageData("orders", { force: true });
+    }));
+    document.getElementById("ordersPeriod").addEventListener("change", () => {
+      resetOrdersDateRange(document.getElementById("ordersPeriod").value);
+      state.orders.offset = 0;
+      loadPageData("orders", { force: true });
+    });
+    ["ordersDateFrom", "ordersDateTo", "ordersUser", "ordersShop", "ordersCategory", "ordersStatus"].forEach((id) => {
+      document.getElementById(id).addEventListener("change", () => {
+        state.orders.offset = 0;
+        loadPageData("orders", { force: true });
+      });
+    });
+    document.getElementById("saveMockup").onclick = saveMockupTemplate;
+    document.getElementById("loadMockups").onclick = () => loadPageData("mockups", { force: true });
+    document.getElementById("mockupId").addEventListener("keydown", submitOnEnter(saveMockupTemplate));
+    document.getElementById("mockupName").addEventListener("keydown", submitOnEnter(saveMockupTemplate));
+
+    showPage(routePage(), { skipLoad: true });
+    loadDefaultAdminData();
+
+    function routePage() {
+      const match = window.location.pathname.match(/^\/admin\/ui\/([^/]+)/);
+      const page = match?.[1] || "overview";
+      return pageMeta[page] ? page : "overview";
+    }
+
+    function navigate(page) {
+      const target = pageMeta[page] ? page : "overview";
+      window.history.pushState({}, "", `/admin/ui/${target}`);
+      showPage(target);
+    }
+
+    function showPage(page, options = {}) {
+      document.querySelectorAll(".page").forEach((node) => node.classList.remove("active"));
+      document.getElementById(`page-${page}`).classList.add("active");
+      document.querySelectorAll("[data-page-link]").forEach((link) => {
+        link.classList.toggle("active", link.dataset.pageLink === page);
+      });
+      document.getElementById("pageTitle").textContent = pageMeta[page][0];
+      document.getElementById("pageSubtitle").textContent = pageMeta[page][1];
+      if (!options.skipLoad) {
+        const currentLoad = loadPageData(page, { force: true });
+        if (currentLoad) currentLoad.then(() => scheduleWarmupPages(page)).catch(() => undefined);
+      }
+    }
+
+    function hasAdminToken() {
+      return Boolean(adminToken.value.trim() || localStorage.getItem(TOKEN_KEY));
+    }
+
+    function saveAdminToken() {
+      const token = adminToken.value.trim();
+      if (!token) {
+        showError("请先填写 ADMIN_TOKEN");
+        return;
+      }
+      localStorage.setItem(TOKEN_KEY, token);
+      loadedPages.clear();
+      clearWarmupTimers();
+      setMessage("已保存管理员口令，正在加载当前页面");
+      loadDefaultAdminData();
+    }
+
+    async function loadDefaultAdminData() {
+      if (!hasAdminToken()) return;
+      const page = routePage();
+      clearWarmupTimers();
+      setMessage(`正在加载${pageMeta[page][0]}`);
+      try {
+        await loadPageData(page, { force: true });
+        scheduleWarmupPages(page);
+      } catch {
+        // requestAdmin 已经给出可见错误提示。
+      }
+    }
+
+    function loadCurrentPage() {
+      const page = routePage();
+      if (!hasAdminToken()) return;
+      return loadPageData(page, { force: true });
+    }
+
+    function loadPageData(page, options = {}) {
+      const target = pageMeta[page] ? page : "overview";
+      if (!hasAdminToken()) return undefined;
+      if (!options.force && loadedPages.has(target)) return Promise.resolve();
+      const running = loadingPages.get(target);
+      if (running && (options.silent || !running.silent)) return running.promise;
+      const loaders = {
+        overview: loadOverview,
+        users: loadUsers,
+        licenses: loadKeys,
+        ai: loadAiSettings,
+        imageRules: loadImageRules,
+        gallery: loadGallery,
+        featured: loadFeatured,
+        orders: loadOrders,
+        mockups: loadMockups,
+      };
+      const silent = Boolean(options.silent);
+      const promise = loaders[target]({ silent: Boolean(options.silent) })
+        .then(() => {
+          loadedPages.add(target);
+        })
+        .finally(() => {
+          if (loadingPages.get(target)?.promise === promise) {
+            loadingPages.delete(target);
+          }
+        });
+      loadingPages.set(target, { promise, silent });
+      return promise;
+    }
+
+    function scheduleWarmupPages(activePage) {
+      clearWarmupTimers();
+      let delay = 450;
+      pageOrder
+        .filter((page) => page !== activePage)
+        .filter((page) => page !== "gallery")
+        .forEach((page) => {
+          const timer = window.setTimeout(() => {
+            if (!hasAdminToken() || routePage() === page) return;
+            loadPageData(page, { silent: true }).catch(() => undefined);
+          }, delay);
+          warmupTimers.push(timer);
+          delay += 650;
+        });
+    }
+
+    function clearWarmupTimers() {
+      while (warmupTimers.length) {
+        window.clearTimeout(warmupTimers.pop());
+      }
+    }
+
+    async function loadOverview(options = {}) {
+      const params = new URLSearchParams({
+        period: document.getElementById("overviewPeriod").value,
+      });
+      const data = await requestAdmin(`/admin/overview?${params}`, { silent: options.silent });
+      const stats = data.stats || {};
+      setText("statUsers", formatNumber(stats.total_users));
+      setText("statActiveMembers", formatNumber(stats.active_members));
+      setText("statNewUsers7d", formatNumber(stats.new_users_7d));
+      setText("statUnusedKeys", formatNumber(stats.unused_keys));
+      setText("statAssets", formatNumber(stats.total_assets));
+      setText("statAssetSkus", formatNumber(stats.asset_skus));
+      setText("statNewAssets7d", formatNumber(stats.new_assets_7d));
+      setText("statAssetBytes", formatBytes(stats.total_asset_bytes));
+      setText("statOrders", formatNumber(stats.total_orders));
+      setText("statSales", formatMoney(stats.total_sales));
+      setText("statOrderingUsers", formatNumber(stats.ordering_users));
+      setText("statOrderingShops", formatNumber(stats.ordering_shops));
+      renderUserOrderStats(data.userOrderStats || []);
+      renderRecentUsers(data.recentUsers || []);
+      renderRecentKeys(data.recentKeys || []);
+      if (!options.silent) setMessage("概览已刷新");
+    }
+
+    function renderRecentUsers(users) {
+      const body = document.getElementById("recentUsersBody");
+      body.innerHTML = users.length ? "" : emptyRow(3, "暂无用户");
+      users.forEach((user) => {
+        body.insertAdjacentHTML("beforeend", `
+          <tr>
+            <td>${escapeHtml(user.phone)}</td>
+            <td>${membershipBadge(user)}</td>
+            <td>${formatDate(user.created_at)}</td>
+          </tr>
+        `);
+      });
+    }
+
+    function renderUserOrderStats(rows) {
+      const body = document.getElementById("userOrderStatsBody");
+      body.innerHTML = rows.length ? "" : emptyRow(4, "暂无订单数据");
+      rows.forEach((row) => {
+        body.insertAdjacentHTML("beforeend", `
+          <tr>
+            <td><strong>${escapeHtml(row.phone || "-")}</strong><div class="muted">${escapeHtml(row.display_name || "-")}</div></td>
+            <td>${formatNumber(row.order_count)}</td>
+            <td>${formatMoney(row.sales_amount)}</td>
+            <td>${formatDate(row.last_order_at)}</td>
+          </tr>
+        `);
+      });
+    }
+
+    function renderRecentKeys(keys) {
+      const body = document.getElementById("recentKeysBody");
+      body.innerHTML = keys.length ? "" : emptyRow(4, "暂无授权码");
+      keys.forEach((key) => {
+        body.insertAdjacentHTML("beforeend", `
+          <tr>
+            <td>${escapeHtml(key.key_prefix)}</td>
+            <td>${planLabel(key.plan)}</td>
+            <td>${keyStatusBadge(key.status)}</td>
+            <td>${escapeHtml(key.assigned_phone || "-")}</td>
+          </tr>
+        `);
+      });
+    }
+
+    async function loadUsers(options = {}) {
+      const body = document.getElementById("usersBody");
+      if (!options.silent) {
+        body.innerHTML = emptyRow(9, "正在加载用户信息...");
+        document.getElementById("usersSummary").textContent = "正在加载";
+      }
+      state.users.limit = Number(document.getElementById("usersLimit").value || 10);
+      const params = new URLSearchParams({
+        keyword: document.getElementById("usersKeyword").value.trim(),
+        membership: document.getElementById("usersMembership").value,
+        deletionState: document.getElementById("usersDeletionState").value,
+        limit: String(state.users.limit),
+        offset: String(state.users.offset),
+      });
+      const data = await requestAdmin(`/admin/users?${params}`, { silent: options.silent });
+      state.users.total = data.total || 0;
+      state.users.limit = data.limit || state.users.limit;
+      state.users.offset = data.offset || 0;
+      document.getElementById("usersSummary").textContent = `共 ${formatNumber(state.users.total)} 个用户`;
+      renderUsers(data.users || []);
+      renderPager("usersPager", state.users, () => loadPageData("users", { force: true }));
+      if (!options.silent) setMessage("用户列表已刷新");
+    }
+
+    function renderUsers(users) {
+      const body = document.getElementById("usersBody");
+      body.innerHTML = users.length ? "" : emptyRow(9, "暂无用户");
+      users.forEach((user) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>
+            <strong>${escapeHtml(user.phone || "")}</strong>
+            <div class="muted">${escapeHtml(user.display_name || "-")}</div>
+          </td>
+          <td>${membershipBadge(user)}</td>
+          <td>${formatDate(user.membership_expires_at)}</td>
+          <td>
+            ${escapeHtml(user.device_name || "-")}
+            <div class="muted">最后在线：${formatDate(user.last_seen_at)}</div>
+          </td>
+          <td>${formatNumber(user.shop_count)} / ${formatNumber(user.gallery_usage_count)}</td>
+          <td>
+            <strong>${formatBytes(user.gallery_storage_used_bytes)}</strong>
+            <div class="muted">上限 ${formatBytes(user.gallery_storage_limit_bytes)}</div>
+            <button class="secondary" data-storage-user-id="${escapeHtml(user.id)}">调整容量</button>
+          </td>
+          <td>
+            ${formatDate(user.created_at)}
+            <div class="muted">最后登录：${formatDate(user.last_login_at)}</div>
+          </td>
+          <td>
+            ${formatDate(user.last_seen_at)}
+          </td>
+          <td>
+            <div class="toolbar" style="margin-top:0">
+              ${user.deleted_at ? `<button class="secondary" data-restore-user-id="${escapeHtml(user.id)}">恢复用户</button>` : `<button class="danger" data-unbind-user-id="${escapeHtml(user.id)}">解绑设备</button><button class="danger" data-delete-user-id="${escapeHtml(user.id)}" ${user.role === "admin" ? "disabled" : ""}>删除用户</button>`}
+            </div>
+          </td>
+        `;
+        tr.querySelector("[data-storage-user-id]").onclick = async () => {
+          await updateUserStorageLimit(user);
+        };
+        tr.querySelector("[data-unbind-user-id]").onclick = async () => {
+          await requestAdmin(`/admin/users/${encodeURIComponent(user.id)}/unbind-device`, { method: "POST" });
+          setMessage("设备已解绑");
+          await loadUsers();
+        };
+        const deleteButton = tr.querySelector("[data-delete-user-id]");
+        if (deleteButton) {
+          deleteButton.onclick = async () => {
+            await deleteUser(user);
+          };
+        }
+        const restoreButton = tr.querySelector("[data-restore-user-id]");
+        if (restoreButton) {
+          restoreButton.onclick = async () => {
+            await requestAdmin(`/admin/users/${encodeURIComponent(user.id)}/restore`, { method: "POST" });
+            setMessage("用户已恢复");
+            await loadUsers({ force: true });
+          };
+        }
+        body.appendChild(tr);
+      });
+    }
+
+    async function deleteUser(user) {
+      const label = user.phone || user.display_name || user.id;
+      const confirmed = window.confirm(`确定逻辑删除用户 ${label} 吗？该用户及其上传原图会从正常列表隐藏，可在已删除状态中恢复。`);
+      if (!confirmed) return;
+      await requestAdmin(`/admin/users/${encodeURIComponent(user.id)}`, { method: "DELETE" });
+      setMessage("用户已删除");
+      state.users.offset = Math.max(0, Math.min(state.users.offset, Math.max(0, state.users.total - 1)));
+      await loadUsers({ force: true });
+    }
+
+    async function updateUserStorageLimit(user) {
+      const currentGb = Number(user.gallery_storage_limit_bytes || 0) / 1024 / 1024 / 1024;
+      const value = window.prompt(`调整 ${user.phone || "用户"} 的图库容量上限（GB）`, currentGb ? trimNumber(currentGb, 2) : "10");
+      if (value === null) return;
+      const limitGb = Number(value);
+      if (!Number.isFinite(limitGb) || limitGb < 0) {
+        showError("容量上限必须是大于等于 0 的数字");
+        return;
+      }
+      await requestAdmin(`/admin/users/${encodeURIComponent(user.id)}/storage-limit`, {
+        method: "POST",
+        body: JSON.stringify({ limitGb }),
+      });
+      setMessage("用户图库容量上限已更新");
+      await loadUsers({ force: true });
+    }
+
+    async function createKeys() {
+      const plan = document.getElementById("plan").value;
+      const count = Number(document.getElementById("keyCount").value || 1);
+      const data = await requestAdmin("/admin/license-keys", {
+        method: "POST",
+        body: JSON.stringify({ plan, count }),
+      });
+      keysOutput.value = data.keys.map((item) => item.key).join("\n");
+      setMessage(`已生成 ${data.keys.length} 个授权码`);
+      state.keys.offset = 0;
+      await loadPageData("licenses", { force: true });
+    }
+
+    async function loadKeys(options = {}) {
+      const body = document.getElementById("keysBody");
+      if (!options.silent) {
+        body.innerHTML = emptyRow(7, "正在加载授权码...");
+        document.getElementById("keysSummary").textContent = "正在加载";
+      }
+      const params = new URLSearchParams({
+        keyword: document.getElementById("keysKeyword").value.trim(),
+        status: document.getElementById("keysStatus").value,
+        plan: document.getElementById("keysPlan").value,
+        deletionState: document.getElementById("keysDeletionState").value,
+        limit: String(state.keys.limit),
+        offset: String(state.keys.offset),
+      });
+      const data = await requestAdmin(`/admin/license-keys?${params}`, { silent: options.silent });
+      state.keys.total = data.total || 0;
+      state.keys.limit = data.limit || state.keys.limit;
+      state.keys.offset = data.offset || 0;
+      state.keys.visible = data.keys || [];
+      document.getElementById("keysSummary").textContent = `共 ${formatNumber(state.keys.total)} 个授权码`;
+      renderKeys(state.keys.visible);
+      renderPager("keysPager", state.keys, () => loadPageData("licenses", { force: true }));
+      if (!options.silent) setMessage("授权码列表已刷新");
+    }
+
+    function renderKeys(keys) {
+      const body = document.getElementById("keysBody");
+      body.innerHTML = keys.length ? "" : emptyRow(7, "暂无授权码");
+      keys.forEach((key) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${licenseKeyCell(key)}</td>
+          <td>${planLabel(key.plan)} <span class="muted">${key.days || "-"} 天</span></td>
+          <td>${formatYuan(key.price_cents)}</td>
+          <td>${keyStatusBadge(key.status)}</td>
+          <td>${escapeHtml(key.assigned_phone || "-")}</td>
+          <td>
+            <div>生成：${formatDate(key.created_at)}</div>
+            <div class="muted">兑换：${formatDate(key.redeemed_at)}</div>
+            <div class="muted">到期：${formatDate(key.expires_at)}</div>
+          </td>
+          <td>${key.deleted_at ? `<button class="secondary" type="button" data-restore-license="${escapeAttribute(key.id)}">恢复</button>` : key.status === "unused" ? `<button class="danger" type="button" data-delete-license="${escapeAttribute(key.id)}">删除</button>` : "-"}</td>
+        `;
+        const copyButton = tr.querySelector("[data-copy-license]");
+        if (copyButton && key.key_plain) {
+          copyButton.onclick = () => copyLicenseKey(key.key_plain);
+        }
+        const deleteButton = tr.querySelector("[data-delete-license]");
+        if (deleteButton) {
+          deleteButton.onclick = () => deleteLicenseKey(key.id, deleteButton);
+        }
+        const restoreButton = tr.querySelector("[data-restore-license]");
+        if (restoreButton) {
+          restoreButton.onclick = async () => {
+            await requestAdmin(`/admin/license-keys/${encodeURIComponent(key.id)}/restore`, { method: "POST" });
+            setMessage("授权码已恢复");
+            await loadPageData("licenses", { force: true });
+          };
+        }
+        body.appendChild(tr);
+      });
+    }
+
+    async function deleteLicenseKey(keyId, deleteButton) {
+      if (!window.confirm("确认删除这个未使用授权码？")) return;
+      if (deleteButton) {
+        deleteButton.disabled = true;
+        deleteButton.textContent = "删除中...";
+      }
+      try {
+        await requestAdmin(`/admin/license-keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
+        setMessage("未使用授权码已删除");
+        await loadPageData("licenses", { force: true });
+      } catch (error) {
+        showError(error.message || "删除授权码失败");
+      } finally {
+        if (deleteButton && document.body.contains(deleteButton)) {
+          deleteButton.disabled = false;
+          deleteButton.textContent = "删除";
+        }
+      }
+    }
+
+    function licenseKeyCell(key) {
+      const fullKey = key.status === "unused" ? key.key_plain : "";
+      if (fullKey) {
+        return `
+          <div class="break"><strong>${escapeHtml(fullKey)}</strong></div>
+          <button class="secondary" data-copy-license="${escapeAttribute(key.id)}">复制</button>
+        `;
+      }
+      return `
+        <div><strong>${escapeHtml(key.key_prefix || "-")}</strong></div>
+        <div class="muted">${key.status === "unused" ? "旧授权码仅保存前缀" : "已使用，不再显示完整内容"}</div>
+      `;
+    }
+
+    async function copyLicenseKey(value) {
+      try {
+        await copyText(value);
+        setMessage("授权码已复制");
+      } catch {
+        setMessage("授权码已复制");
+      }
+    }
+
+    async function copyUnusedLicenseKeys() {
+      const keys = state.keys.visible
+        .filter((key) => key.status === "unused" && key.key_plain)
+        .map((key) => key.key_plain);
+      if (!keys.length) {
+        showError("当前列表没有可复制的未使用授权码");
+        return;
+      }
+      await copyText(keys.join("\n"));
+      setMessage(`已复制本页 ${keys.length} 个未使用授权码`);
+    }
+
+    async function copyText(value) {
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch {
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      }
+    }
+
+    async function loadAiSettings(options = {}) {
+      const data = await requestAdmin("/admin/ai-settings", { silent: options.silent });
+      fillAiSettings(data.settings);
+      if (!options.silent) setMessage("AI 设置已刷新");
+    }
+
+    async function saveAiSettings() {
+      const imageApiKey = normalizeSecretInput(aiFields.imageApiKey.value);
+      const textApiKey = normalizeSecretInput(aiFields.textApiKey.value);
+      const payload = {
+        imageProvider: aiFields.imageProvider.value.trim(),
+        imageBaseUrl: aiFields.imageBaseUrl.value.trim(),
+        imageModel: aiFields.imageModel.value.trim(),
+        textProvider: aiFields.textProvider.value.trim(),
+        textBaseUrl: aiFields.textBaseUrl.value.trim(),
+        textModel: aiFields.textModel.value.trim(),
+        imagePromptTemplate: aiFields.imagePromptTemplate.value,
+        titlePromptTemplate: aiFields.titlePromptTemplate.value,
+        descriptionPromptTemplate: aiFields.descriptionPromptTemplate.value,
+      };
+      if (imageApiKey) payload.imageApiKey = imageApiKey;
+      if (textApiKey) payload.textApiKey = textApiKey;
+      const data = await requestAdmin("/admin/ai-settings", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      fillAiSettings(data.settings);
+      setMessage("AI 设置已保存");
+    }
+
+    function fillAiSettings(settings) {
+      aiFields.imageProvider.value = settings.imageProvider || "pixel";
+      aiFields.imageBaseUrl.value = settings.imageBaseUrl || "https://ai-pixel.online/v1";
+      aiFields.imageModel.value = settings.imageModel || "gpt-image-2";
+      aiFields.textProvider.value = settings.textProvider || "xiaoqian";
+      aiFields.textBaseUrl.value = settings.textBaseUrl || "https://xiaoqian.art/v1";
+      aiFields.textModel.value = settings.textModel || "gpt-5-high";
+      aiFields.imagePromptTemplate.value = settings.imagePromptTemplate || "";
+      aiFields.titlePromptTemplate.value = settings.titlePromptTemplate || "";
+      aiFields.descriptionPromptTemplate.value = settings.descriptionPromptTemplate || "";
+      aiFields.imageApiKey.value = settings.imageApiKeyMasked || "";
+      aiFields.textApiKey.value = settings.textApiKeyMasked || "";
+      aiFields.imageKeyStatus.textContent = settings.imageApiKeyStored ? "图片 Key 已保存，已脱敏显示" : "图片 Key 未保存";
+      aiFields.textKeyStatus.textContent = settings.textApiKeyStored ? "文案 Key 已保存，已脱敏显示" : "文案 Key 未保存";
+    }
+
+    async function loadAiModels(kind) {
+      const fields = kind === "image"
+        ? {
+            provider: aiFields.imageProvider,
+            baseUrl: aiFields.imageBaseUrl,
+            model: aiFields.imageModel,
+            options: aiFields.imageModelOptions,
+            status: aiFields.imageModelStatus,
+            label: "图片",
+          }
+        : {
+            provider: aiFields.textProvider,
+            baseUrl: aiFields.textBaseUrl,
+            model: aiFields.textModel,
+            options: aiFields.textModelOptions,
+            status: aiFields.textModelStatus,
+            label: "文案",
+          };
+      fields.status.textContent = `正在加载${fields.label}模型...`;
+      try {
+        const params = new URLSearchParams({
+          kind,
+          provider: fields.provider.value.trim(),
+          baseUrl: fields.baseUrl.value.trim(),
+        });
+        const data = await requestAdmin(`/admin/ai-models?${params}`);
+        renderModelOptions(fields.options, data.models || []);
+        if (!fields.model.value.trim() && data.models?.[0]) {
+          fields.model.value = data.models[0];
+        }
+        fields.status.textContent = `已加载 ${data.models?.length || 0} 个${fields.label}模型，可直接选择，也可以手动输入。`;
+      } catch (error) {
+        fields.status.textContent = `${fields.label}模型加载失败：${error.message || error}`;
+        throw error;
+      }
+    }
+
+    function renderModelOptions(container, models) {
+      container.innerHTML = "";
+      models.forEach((model) => {
+        const option = document.createElement("option");
+        option.value = model;
+        container.appendChild(option);
+      });
+    }
+
+    function normalizeSecretInput(value) {
+      const trimmed = value.trim();
+      if (!trimmed || trimmed.includes("*")) return "";
+      return trimmed;
+    }
+
+    async function loadImageRules(options = {}) {
+      const body = document.getElementById("imageRulesBody");
+      if (!options.silent) body.innerHTML = `<tr><td colspan="5">正在加载...</td></tr>`;
+      const data = await requestAdmin("/admin/product-image-rules", { silent: options.silent });
+      const rules = data.rules || [];
+      state.imageRules.total = rules.length;
+      document.getElementById("imageRulesSummary").textContent = `共 ${formatNumber(rules.length)} 条规则`;
+      renderImageRules(rules);
+    }
+
+    async function saveImageRule() {
+      const payload = {
+        productType: document.getElementById("imageRuleProductType").value.trim(),
+        aspectRatio: document.getElementById("imageRuleAspectRatio").value.trim(),
+        enabled: document.getElementById("imageRuleEnabled").value === "true",
+      };
+      if (!payload.productType || !payload.aspectRatio) {
+        showError("请填写商品类型和图片比例");
+        return;
+      }
+      await requestAdmin("/admin/product-image-rules", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      document.getElementById("imageRuleProductType").value = "";
+      document.getElementById("imageRuleAspectRatio").value = "";
+      document.getElementById("imageRuleEnabled").value = "true";
+      setMessage("商品图片比例规则已保存");
+      await loadPageData("imageRules", { force: true });
+    }
+
+    function renderImageRules(rules) {
+      const body = document.getElementById("imageRulesBody");
+      if (!rules.length) {
+        body.innerHTML = `<tr><td colspan="5">暂无规则</td></tr>`;
+        return;
+      }
+      body.innerHTML = "";
+      for (const rule of rules) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${escapeHtml(rule.productType)}</td>
+          <td><span class="badge">${escapeHtml(rule.aspectRatio)}</span></td>
+          <td>${rule.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge warn">停用</span>'}</td>
+          <td>${formatDate(rule.updatedAt)}</td>
+          <td>
+            <button class="secondary" data-edit-rule>编辑</button>
+            <button class="${rule.enabled ? "danger" : "primary"}" data-toggle-rule>${rule.enabled ? "停用" : "启用"}</button>
+          </td>
+        `;
+        tr.querySelector("[data-edit-rule]").onclick = () => {
+          document.getElementById("imageRuleProductType").value = rule.productType || "";
+          document.getElementById("imageRuleAspectRatio").value = rule.aspectRatio || "";
+          document.getElementById("imageRuleEnabled").value = String(Boolean(rule.enabled));
+        };
+        tr.querySelector("[data-toggle-rule]").onclick = () => toggleImageRule(rule.id, !rule.enabled);
+        body.appendChild(tr);
+      }
+    }
+
+    async function toggleImageRule(ruleId, enabled) {
+      await requestAdmin(`/admin/product-image-rules/${encodeURIComponent(ruleId)}/status`, {
+        method: "POST",
+        body: JSON.stringify({ enabled }),
+      });
+      setMessage(enabled ? "规则已启用" : "规则已停用");
+      await loadPageData("imageRules", { force: true });
+    }
+
+    async function loadFeatured(options = {}) {
+      const body = document.getElementById("featuredBody");
+      if (!options.silent) {
+        body.innerHTML = emptyRow(7, "正在加载精品库...");
+        document.getElementById("featuredSummary").textContent = "正在加载";
+      }
+      state.featured.limit = Number(document.getElementById("featuredLimit").value || 10);
+      const params = new URLSearchParams({
+        keyword: document.getElementById("featuredKeyword").value.trim(),
+        status: document.getElementById("featuredStatus").value,
+        deletionState: document.getElementById("featuredDeletionState").value,
+        limit: String(state.featured.limit),
+        offset: String(state.featured.offset),
+      });
+      const data = await requestAdmin(`/admin/featured-gallery?${params}`, { silent: options.silent });
+      state.featured.total = data.total || 0;
+      state.featured.limit = data.limit || state.featured.limit;
+      state.featured.offset = data.offset || 0;
+      document.getElementById("featuredSummary").textContent = `共 ${formatNumber(state.featured.total)} 条精品记录`;
+      renderFeatured(data.items || data.featured || []);
+      renderPager("featuredPager", state.featured, () => loadPageData("featured", { force: true }));
+      if (!options.silent) setMessage("精品库已刷新");
+    }
+
+    function renderFeatured(items) {
+      const body = document.getElementById("featuredBody");
+      body.innerHTML = items.length ? "" : emptyRow(7, "暂无精品数据");
+      items.forEach((item) => {
+        const imageUrl = item.thumb_url || item.public_url;
+        const mockups = Array.isArray(item.mockup_results) ? item.mockup_results : [];
+        const mockupHtml = mockups.slice(0, 6).map((mockup) => {
+          const url = mockup.thumbUrl || mockup.url;
+          return url ? `<img class="thumb" src="${escapeAttribute(url)}" alt="" loading="lazy" decoding="async" title="${escapeAttribute(mockup.templateName || "套图")}">` : "";
+        }).join("");
+        const action = item.deleted_at
+          ? `<button class="secondary" type="button" data-restore-featured="${escapeAttribute(item.id)}">恢复</button>`
+          : `<button class="secondary" type="button" data-edit-featured="${escapeAttribute(item.id)}">编辑</button><button class="danger" type="button" data-delete-featured="${escapeAttribute(item.id)}">删除</button>`;
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td>${imageUrl ? `<img class="thumb" src="${escapeAttribute(imageUrl)}" alt="" loading="lazy" decoding="async">` : "-"}${mockupHtml ? `<div class="toolbar">${mockupHtml}</div>` : ""}</td>
+          <td><strong>${escapeHtml(item.sku || "-")}</strong><div class="muted break">${escapeHtml(item.source_filename || "-")}</div></td>
+          <td>${escapeHtml(item.uploaded_by_phone || "-")}</td>
+          <td><span class="badge ${item.status === "active" ? "ok" : item.status === "hidden" ? "bad" : ""}">${escapeHtml(item.status || "review")}</span><div class="muted">评分 ${formatNumber(item.score)}</div></td>
+          <td>订单 ${formatNumber(item.order_count)}<div class="muted">用户 ${formatNumber(item.distinct_user_count)} / 店铺 ${formatNumber(item.distinct_shop_count)}</div></td>
+          <td>${escapeHtml(item.admin_note || item.reason || "-")}</td>
+          <td><div class="toolbar">${action}</div></td>
+        `;
+        row.querySelector("[data-edit-featured]")?.addEventListener("click", () => editFeatured(item));
+        row.querySelector("[data-delete-featured]")?.addEventListener("click", () => deleteFeatured(item));
+        row.querySelector("[data-restore-featured]")?.addEventListener("click", () => restoreFeatured(item));
+        body.appendChild(row);
+      });
+    }
+
+    async function editFeatured(item) {
+      const status = window.prompt("精品状态（active / review / hidden）", item.status || "review");
+      if (status === null) return;
+      if (!['active', 'review', 'hidden'].includes(status)) return showError("状态必须是 active、review 或 hidden");
+      const score = window.prompt("评分", String(item.score || 0));
+      if (score === null) return;
+      const adminNote = window.prompt("管理员备注", item.admin_note || "");
+      if (adminNote === null) return;
+      await requestAdmin(`/admin/featured-gallery/${encodeURIComponent(item.id)}`, { method: "PUT", body: JSON.stringify({ status, score: Number(score), adminNote }) });
+      await loadFeatured({ force: true });
+    }
+
+    async function deleteFeatured(item) {
+      if (!window.confirm(`确认逻辑删除精品记录 ${item.sku || ""}？`)) return;
+      await requestAdmin(`/admin/featured-gallery/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      await loadFeatured({ force: true });
+    }
+
+    async function restoreFeatured(item) {
+      await requestAdmin(`/admin/featured-gallery/${encodeURIComponent(item.id)}/restore`, { method: "POST" });
+      await loadFeatured({ force: true });
+    }
+    async function loadGallery(options = {}) {
+      const body = document.getElementById("galleryBody");
+      if (!options.silent) {
+        body.innerHTML = emptyRow(7, "正在加载云图库...");
+        document.getElementById("gallerySummary").textContent = "正在加载";
+      }
+      await ensureAdminUserOptions("galleryUser");
+      state.gallery.limit = Number(document.getElementById("galleryLimit").value || 10);
+      const params = new URLSearchParams({
+        keyword: document.getElementById("galleryKeyword").value.trim(),
+        ratioFamily: document.getElementById("galleryRatio").value,
+        mockupStatus: document.getElementById("galleryMockupStatus").value,
+        orderedStatus: document.getElementById("galleryOrderedStatus").value,
+        deletionState: document.getElementById("galleryDeletionState").value,
+        limit: String(state.gallery.limit),
+        offset: String(state.gallery.offset),
+      });
+      const galleryUserId = document.getElementById("galleryUser").value;
+      if (galleryUserId) params.set("userId", galleryUserId);
+      const data = await requestAdmin(`/admin/gallery-assets?${params}`, { silent: options.silent });
+      state.gallery.total = data.total || 0;
+      state.gallery.limit = data.limit || state.gallery.limit;
+      state.gallery.offset = data.offset || 0;
+      state.gallery.visible = data.assets || [];
+      document.getElementById("gallerySummary").textContent = `共 ${formatNumber(state.gallery.total)} 张图片`;
+      renderGallery(data.assets || []);
+      renderPager("galleryPager", state.gallery, () => loadPageData("gallery", { force: true }));
+      if (!options.silent) setMessage("云图库已刷新");
+    }
+
+    function renderGallery(assets) {
+      const body = document.getElementById("galleryBody");
+      body.innerHTML = assets.length ? "" : emptyRow(8, "暂无图片");
+      assets.forEach((asset) => {
+        const imageUrl = asset.thumb_url || asset.public_url;
+        const mockups = Array.isArray(asset.mockup_results) ? asset.mockup_results : [];
+        const mockupHtml = mockups.slice(0, 6).map((item) => {
+          const url = item.thumbUrl || item.url;
+          return url ? `<img class="thumb" src="${escapeAttribute(url)}" alt="${escapeAttribute(item.templateName || "")}" loading="lazy" decoding="async" title="${escapeAttribute(`${item.templateName || ""} ${item.sceneIndex || ""}`)}">` : "";
+        }).join("");
+        body.insertAdjacentHTML("beforeend", `
+          <tr>
+            <td>
+              ${imageUrl ? `<img class="thumb" src="${escapeAttribute(imageUrl)}" alt="" loading="lazy" decoding="async">` : "-"}
+              ${mockupHtml ? `<div class="toolbar">${mockupHtml}</div>` : `<div class="muted">暂无套图</div>`}
+            </td>
+            <td>
+              <strong>${escapeHtml(asset.sku || "-")}</strong>
+              <div class="muted break">${escapeHtml(asset.source_filename || "-")}</div>
+              ${asset.generated_title ? `<div class="muted break">标题：${escapeHtml(asset.generated_title)}</div>` : ""}
+            </td>
+            <td>${ratioLabel(asset.ratio_family)}</td>
+            <td>${formatNumber(asset.width)} × ${formatNumber(asset.height)}<div class="muted">${formatBytes(asset.size_bytes)}</div></td>
+            <td>${escapeHtml(asset.uploaded_by_phone || "-")}</td>
+            <td>
+              <div>使用 ${formatNumber(asset.usage_count)}</div>
+              <div class="muted">出单 ${formatNumber(asset.order_count)} / ${formatMoney(asset.sales_amount)}</div>
+              <div class="muted">${formatDate(asset.last_order_at)}</div>
+            </td>
+            <td>${formatDate(asset.created_at)}</td>
+                      <td><div class="toolbar">${asset.deleted_at ? `<button class="secondary" data-restore-gallery="${escapeAttribute(asset.id)}">恢复</button>` : `<button class="secondary" data-edit-gallery="${escapeAttribute(asset.id)}">编辑</button><button class="danger" data-delete-gallery="${escapeAttribute(asset.id)}">删除</button>`}</div></td>
+          </tr>
+        `);
+      });
+    }
+
+    document.getElementById("galleryBody").addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-edit-gallery], [data-delete-gallery], [data-restore-gallery]");
+      if (!button) return;
+      const assetId = button.dataset.editGallery || button.dataset.deleteGallery || button.dataset.restoreGallery;
+      const asset = (state.gallery.visible || []).find((item) => item.id === assetId);
+      if (!asset) return;
+      if (button.dataset.editGallery) await editGalleryAsset(asset);
+      if (button.dataset.deleteGallery) await deleteGalleryAsset(asset);
+      if (button.dataset.restoreGallery) await restoreGalleryAsset(asset);
+    });
+
+    async function editGalleryAsset(asset) {
+      const sku = window.prompt("SKU", asset.sku || "");
+      if (sku === null) return;
+      const productType = window.prompt("商品类型", asset.product_type || "");
+      if (productType === null) return;
+      const generatedTitle = window.prompt("标题", asset.generated_title || "");
+      if (generatedTitle === null) return;
+      await requestAdmin(`/admin/gallery-assets/${encodeURIComponent(asset.id)}`, { method: "PUT", body: JSON.stringify({ sku, productType, generatedTitle }) });
+      await loadGallery({ force: true });
+    }
+
+    async function deleteGalleryAsset(asset) {
+      if (!window.confirm(`确认逻辑删除图库原图 ${asset.sku || ""}？套图不会作为独立图库记录。`)) return;
+      await requestAdmin(`/admin/gallery-assets/${encodeURIComponent(asset.id)}`, { method: "DELETE" });
+      await loadGallery({ force: true });
+    }
+
+    async function restoreGalleryAsset(asset) {
+      await requestAdmin(`/admin/gallery-assets/${encodeURIComponent(asset.id)}/restore`, { method: "POST" });
+      await loadGallery({ force: true });
+    }
+
+    async function loadOrders(options = {}) {
+      const body = document.getElementById("ordersBody");
+      if (!options.silent) {
+        body.innerHTML = emptyRow(8, "正在加载订单...");
+        document.getElementById("ordersSummary").textContent = "正在加载";
+      }
+      await ensureAdminUserOptions("ordersUser");
+      state.orders.limit = Number(document.getElementById("ordersLimit").value || 10);
+      const params = new URLSearchParams({
+        period: document.getElementById("ordersPeriod").value,
+        dateFrom: document.getElementById("ordersDateFrom").value,
+        dateTo: document.getElementById("ordersDateTo").value,
+        keyword: document.getElementById("ordersKeyword").value.trim(),
+        limit: String(state.orders.limit),
+        offset: String(state.orders.offset),
+      });
+      [
+        ["userId", "ordersUser"],
+        ["externalShopId", "ordersShop"],
+        ["category", "ordersCategory"],
+        ["status", "ordersStatus"],
+      ].forEach(([param, id]) => {
+        const value = document.getElementById(id).value;
+        if (value) params.set(param, value);
+      });
+      const data = await requestAdmin(`/admin/orders?${params}`, { silent: options.silent });
+      state.orders.total = data.total || 0;
+      state.orders.limit = data.limit || state.orders.limit;
+      state.orders.offset = data.offset || 0;
+      fillOrderFilters(data.filters || {});
+      document.getElementById("ordersSummary").textContent = `共 ${formatNumber(state.orders.total)} 个订单，销售额 ${formatMoney(data.salesAmount)}`;
+      renderOrders(data.orders || []);
+      renderPager("ordersPager", state.orders, () => loadPageData("orders", { force: true }));
+      if (!options.silent) setMessage("订单信息已刷新");
+    }
+
+    function resetOrdersDateRange(period) {
+      const from = document.getElementById("ordersDateFrom");
+      const to = document.getElementById("ordersDateTo");
+      const today = localDateInputValue(0);
+      if (period === "today") {
+        from.value = today;
+        to.value = today;
+      } else if (period === "7d") {
+        from.value = localDateInputValue(6);
+        to.value = today;
+      } else if (period === "30d") {
+        from.value = localDateInputValue(29);
+        to.value = today;
+      } else if (period === "1y") {
+        from.value = localDateInputValue(364);
+        to.value = today;
+      } else if (period === "all") {
+        from.value = "";
+        to.value = "";
+      }
+    }
+
+    function fillOrderFilters(filters) {
+      fillSelectOptions("ordersShop", filters.shops || [], "externalShopId", "shopName", "全部店铺");
+      fillSelectOptions("ordersCategory", (filters.categories || []).map((value) => ({ value, label: value })), "value", "label", "全部品类");
+      fillSelectOptions("ordersStatus", (filters.statuses || []).map((value) => ({ value, label: statusLabel(value) })), "value", "label", "全部状态");
+    }
+
+    function renderOrders(orders) {
+      const body = document.getElementById("ordersBody");
+      body.innerHTML = orders.length ? "" : emptyRow(8, "暂无订单");
+      orders.forEach((order) => {
+        const products = Array.isArray(order.products) && order.products.length
+          ? order.products
+          : (order.offer_ids || []).map((offerId) => ({ offerId, quantity: 1 }));
+        const galleryImageBySku = new Map((order.gallery_images || []).map((item) => [item.sku, item.thumbUrl || item.url]));
+        body.insertAdjacentHTML("beforeend", `
+          <tr>
+            <td>
+              <strong>${escapeHtml(order.user_phone || "-")}</strong>
+              <div class="muted">${escapeHtml(order.shop_name || order.external_shop_id || "-")}</div>
+            </td>
+            <td>
+              <strong>${escapeHtml(order.posting_number || "-")}</strong>
+              <div class="muted">${escapeHtml(order.posting_kind || "")} ${escapeHtml(order.order_number || "")}</div>
+            </td>
+            <td>${statusBadge(order.status)}</td>
+            <td>
+              <div>${formatDate(order.in_process_at)}</div>
+              <div class="muted">发运 ${formatDate(order.shipment_date)}</div>
+            </td>
+            <td>${products.slice(0, 3).map((product) => renderOrderProduct(product, order, galleryImageBySku)).join("")}${products.length > 3 ? `<div class="muted">还有 ${products.length - 3} 个商品</div>` : ""}</td>
+            <td>${escapeHtml(order.category || "未分类")}</td>
+            <td>${formatMoney(order.sales_amount, order.currency_code || "RUB")}</td>
+            <td>${formatDate(order.synced_at)}</td>
+          </tr>
+        `);
+      });
+    }
+
+    function renderOrderProduct(product, order, galleryImageBySku) {
+      const offerId = product.offerId || product.offer_id || "";
+      const imageUrl = product.imageUrl || product.image_url || order.image_url || galleryImageBySku.get(offerId) || "";
+      return `
+        <div class="order-product">
+          ${imageUrl
+            ? `<img class="order-product-thumb" src="${escapeAttribute(imageUrl)}" alt="" loading="lazy" decoding="async">`
+            : `<span class="order-product-empty">无图</span>`}
+          <div>
+            <strong>${formatNumber(product.quantity || 1)} 个 ${escapeHtml(offerId || "-")}</strong>
+            <div class="muted break">${escapeHtml(product.name || "")}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    async function saveMockupTemplate() {
+      const payload = {
+        id: document.getElementById("mockupId").value.trim(),
+        name: document.getElementById("mockupName").value.trim(),
+        productType: document.getElementById("mockupProductType").value.trim(),
+        sourceAspectRatio: document.getElementById("mockupAspectRatio").value.trim(),
+        description: document.getElementById("mockupDescription").value.trim(),
+      };
+      if (!payload.id || !payload.name) {
+        showError("请填写样机编号和名称");
+        return;
+      }
+      await requestAdmin("/admin/mockup-templates", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setMessage("样机信息已保存");
+      await loadPageData("mockups", { force: true });
+    }
+
+    async function loadMockups(options = {}) {
+      const body = document.getElementById("mockupsBody");
+      if (!options.silent) {
+        body.innerHTML = emptyRow(7, "正在加载样机...");
+        document.getElementById("mockupsSummary").textContent = "正在加载";
+      }
+      const data = await requestAdmin("/admin/mockup-templates", { silent: options.silent });
+      const templates = data.templates || [];
+      state.mockups.total = templates.length;
+      document.getElementById("mockupsSummary").textContent = `共 ${formatNumber(templates.length)} 个样机`;
+      renderMockups(templates);
+      if (!options.silent) setMessage("样机列表已刷新");
+    }
+
+    function renderMockups(templates) {
+      const body = document.getElementById("mockupsBody");
+      body.innerHTML = templates.length ? "" : emptyRow(7, "暂无样机");
+      templates.forEach((template) => {
+        const previewUrl = template.testPreviewUrl || template.previewUrl;
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${previewUrl ? `<img class="preview-thumb" src="${escapeAttribute(previewUrl)}" alt="" loading="lazy" decoding="async">` : "-"}</td>
+          <td>
+            <strong>${escapeHtml(template.name || "-")}</strong>
+            <div class="muted break">${escapeHtml(template.id || "-")} · ${escapeHtml(template.productType || "-")}</div>
+            <div class="muted break">${escapeHtml(template.description || "-")}</div>
+          </td>
+          <td>
+            ${mockupStatusBadge(template.adminStatus)}
+            <div class="muted">${template.sourceType === "system" ? "系统样机" : "自定义样机"}</div>
+          </td>
+          <td>
+            <div>${escapeHtml(template.sourcePsdFilename || "未上传 PSD")}</div>
+            <div class="muted">${template.sourcePsdSizeBytes ? formatBytes(template.sourcePsdSizeBytes) : "-"}</div>
+            <div class="muted">模板目录：${escapeHtml(template.templateDir || "-")}</div>
+            <div class="muted">${formatNumber(template.sceneCount)} 场景 · ${formatNumber(template.outputWidth)}x${formatNumber(template.outputHeight)}</div>
+            <div class="muted">${mockupReadyHint(template)}</div>
+          </td>
+          <td>
+            ${mockupTestBadge(template.lastTestStatus)}
+            <div class="muted break">${escapeHtml(template.lastTestMessage || "-")}</div>
+            <div class="muted">${formatDate(template.lastTestAt)}</div>
+          </td>
+          <td>${formatDate(template.updatedAt)}</td>
+          <td>
+            <div class="mockup-actions">
+              <button class="secondary" data-edit-mockup>编辑</button>
+              <label class="secondary file-button">
+                上传 PSD
+                <input type="file" accept=".psd" data-upload-psd>
+              </label>
+              <label class="secondary file-button">
+                上传模板文件夹
+                <input type="file" webkitdirectory multiple data-upload-template-files>
+              </label>
+              <button class="secondary" data-test-mockup>测试预览</button>
+              ${template.adminStatus === "published"
+                ? '<button class="danger" data-disable-mockup>停用</button>'
+                : '<button class="primary" data-publish-mockup>发布</button>'}
+            </div>
+          </td>
+        `;
+        tr.querySelector("[data-edit-mockup]").onclick = () => fillMockupForm(template);
+        tr.querySelector("[data-test-mockup]").onclick = () => testMockupTemplate(template.id);
+        const uploadInput = tr.querySelector("[data-upload-psd]");
+        uploadInput.onchange = () => uploadMockupPsd(template.id, uploadInput.files?.[0]);
+        const uploadTemplateInput = tr.querySelector("[data-upload-template-files]");
+        uploadTemplateInput.onchange = () => uploadMockupTemplateFiles(template.id, [...uploadTemplateInput.files || []]);
+        const publishButton = tr.querySelector("[data-publish-mockup]");
+        if (publishButton) publishButton.onclick = () => changeMockupStatus(template.id, "published");
+        const disableButton = tr.querySelector("[data-disable-mockup]");
+        if (disableButton) disableButton.onclick = () => changeMockupStatus(template.id, "disabled");
+        body.appendChild(tr);
+      });
+    }
+
+    function fillMockupForm(template) {
+      document.getElementById("mockupId").value = template.id || "";
+      document.getElementById("mockupName").value = template.name || "";
+      document.getElementById("mockupProductType").value = template.productType || "";
+      document.getElementById("mockupAspectRatio").value = template.sourceAspectRatio || "";
+      document.getElementById("mockupDescription").value = template.description || "";
+      setMessage(`正在编辑样机：${template.name || template.id}`);
+    }
+
+    async function uploadMockupPsd(templateId, file) {
+      if (!file) return;
+      const form = new FormData();
+      form.append("file", file);
+      await requestAdmin(`/admin/mockup-templates/${encodeURIComponent(templateId)}/psd`, {
+        method: "POST",
+        body: form,
+        json: false,
+      });
+      setMessage(`PSD 源文件已保存：${file.name}。请上传转换后的模板文件夹，再生成测试预览。`);
+      await loadPageData("mockups", { force: true });
+    }
+
+    async function uploadMockupTemplateFiles(templateId, files) {
+      if (!files.length) return;
+      if (!files.some((file) => (file.webkitRelativePath || file.name).endsWith("template.json"))) {
+        showError("模板文件夹必须包含 template.json");
+        return;
+      }
+      const form = new FormData();
+      files.forEach((file, index) => {
+        form.append(`relativePath-${index}`, file.webkitRelativePath || file.name);
+        form.append(`file-${index}`, file, file.name);
+      });
+      setMessage(`正在上传模板文件夹，共 ${files.length} 个文件...`);
+      await requestAdmin(`/admin/mockup-templates/${encodeURIComponent(templateId)}/template-files`, {
+        method: "POST",
+        body: form,
+        json: false,
+      });
+      setMessage("模板文件夹已上传，请生成测试预览确认效果");
+      await loadPageData("mockups", { force: true });
+    }
+
+    async function testMockupTemplate(templateId) {
+      setMessage("正在生成测试预览，请稍等...");
+      await requestAdmin(`/admin/mockup-templates/${encodeURIComponent(templateId)}/test-preview`, {
+        method: "POST",
+      });
+      setMessage("测试预览生成成功");
+      await loadPageData("mockups", { force: true });
+    }
+
+    async function changeMockupStatus(templateId, status) {
+      await requestAdmin(`/admin/mockup-templates/${encodeURIComponent(templateId)}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status }),
+      });
+      setMessage(status === "published" ? "样机已发布" : "样机已停用");
+      await loadPageData("mockups", { force: true });
+    }
+
+    async function requestAdmin(path, options = {}) {
+      const token = adminToken.value.trim() || localStorage.getItem(TOKEN_KEY) || "";
+      if (!token) throw showError("请先填写 ADMIN_TOKEN");
+      const silent = Boolean(options.silent);
+      const json = options.json !== false;
+      const { silent: _silent, json: _json, ...fetchOptions } = options;
+      try {
+        const response = await fetch(path, {
+          ...fetchOptions,
+          headers: {
+            ...(json ? { "Content-Type": "application/json" } : {}),
+            "x-admin-token": token,
+            ...(fetchOptions.headers || {}),
+          },
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+        return data;
+      } catch (error) {
+        const messageText = error.message || String(error);
+        if (!silent) throw showError(messageText);
+        throw new Error(messageText);
+      }
+    }
+
+    async function ensureAdminUserOptions(selectId) {
+      const select = document.getElementById(selectId);
+      if (!select || select.dataset.loaded === "true") return;
+      const current = select.value;
+      const data = await requestAdmin("/admin/users?limit=100&offset=0", { silent: true });
+      fillSelectOptions(selectId, data.users || [], "id", "phone", select.options[0]?.textContent || "全部用户");
+      select.value = current;
+      select.dataset.loaded = "true";
+    }
+
+    function fillSelectOptions(selectId, items, valueKey, labelKey, firstLabel) {
+      const select = document.getElementById(selectId);
+      const current = select.value;
+      select.innerHTML = `<option value="">${escapeHtml(firstLabel)}</option>`;
+      items.forEach((item) => {
+        const value = item?.[valueKey] ?? "";
+        if (!value) return;
+        const label = item?.[labelKey] ?? value;
+        select.insertAdjacentHTML("beforeend", `<option value="${escapeAttribute(value)}">${escapeHtml(label)}</option>`);
+      });
+      if ([...select.options].some((option) => option.value === current)) {
+        select.value = current;
+      }
+    }
+
+    function renderPager(containerId, pageState, loader) {
+      const container = document.getElementById(containerId);
+      const start = pageState.total === 0 ? 0 : pageState.offset + 1;
+      const end = Math.min(pageState.offset + pageState.limit, pageState.total);
+      container.innerHTML = `
+        <span>${start}-${end} / ${formatNumber(pageState.total)}</span>
+        <button class="secondary" data-page="prev" ${pageState.offset <= 0 ? "disabled" : ""}>上一页</button>
+        <button class="secondary" data-page="next" ${end >= pageState.total ? "disabled" : ""}>下一页</button>
+      `;
+      container.querySelector("[data-page='prev']").onclick = () => {
+        pageState.offset = Math.max(0, pageState.offset - pageState.limit);
+        loader();
+      };
+      container.querySelector("[data-page='next']").onclick = () => {
+        pageState.offset += pageState.limit;
+        loader();
+      };
+    }
+
+    function membershipBadge(user) {
+      const expiresAt = user.membership_expires_at ? new Date(user.membership_expires_at).getTime() : 0;
+      if (!expiresAt) return '<span class="badge">未开通</span>';
+      if (expiresAt > Date.now()) return `<span class="badge ok">${planLabel(user.membership_plan)}</span>`;
+      return `<span class="badge bad">已过期</span>`;
+    }
+
+    function keyStatusBadge(status) {
+      if (status === "unused") return '<span class="badge ok">未使用</span>';
+      if (status === "redeemed") return '<span class="badge">已兑换</span>';
+      if (status === "disabled") return '<span class="badge bad">已禁用</span>';
+      return `<span class="badge">${escapeHtml(status || "-")}</span>`;
+    }
+
+    function statusBadge(status) {
+      const text = statusLabel(status);
+      const bad = status === "cancelled";
+      const ok = status === "delivered";
+      return `<span class="badge ${bad ? "bad" : ok ? "ok" : ""}">${escapeHtml(text)}</span>`;
+    }
+
+    function statusLabel(status) {
+      if (status === "awaiting_packaging") return "等待备货";
+      if (status === "awaiting_deliver") return "等待发运";
+      if (status === "delivering") return "运输中";
+      if (status === "delivered") return "已签收";
+      if (status === "cancelled") return "已取消";
+      if (status === "arbitration") return "具争议";
+      return status || "-";
+    }
+
+    function mockupStatusBadge(status) {
+      if (status === "published") return '<span class="badge ok">已发布</span>';
+      if (status === "draft") return '<span class="badge warn">草稿</span>';
+      if (status === "disabled") return '<span class="badge bad">已停用</span>';
+      return `<span class="badge">${escapeHtml(status || "-")}</span>`;
+    }
+
+    function mockupTestBadge(status) {
+      if (status === "succeeded") return '<span class="badge ok">测试成功</span>';
+      if (status === "failed") return '<span class="badge bad">测试失败</span>';
+      return '<span class="badge warn">待测试</span>';
+    }
+
+    function mockupReadyHint(template) {
+      if (template.lastTestStatus === "succeeded" && template.sceneCount > 0) {
+        return "发布条件：已满足";
+      }
+      if (template.sceneCount > 0) {
+        return "发布条件：请先生成测试预览";
+      }
+      if (template.sourcePsdFilename) {
+        return "发布条件：PSD 已保存，还需上传转换后的模板文件夹";
+      }
+      return "发布条件：请上传 PSD 源文件或转换后的模板文件夹";
+    }
+
+    function planLabel(plan) {
+      if (plan === "monthly") return "月卡";
+      if (plan === "quarterly") return "季卡";
+      if (plan === "yearly") return "年卡";
+      return "未开通";
+    }
+
+    function ratioLabel(value) {
+      if (value === "portrait") return "3:4";
+      if (value === "square") return "1:1";
+      if (value === "landscape") return "4:3";
+      if (value === "wide") return "16:9";
+      return value || "-";
+    }
+
+    function formatDate(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("zh-CN", { hour12: false });
+    }
+
+    function localDateInputValue(daysAgo = 0) {
+      const date = new Date();
+      date.setDate(date.getDate() - daysAgo);
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const day = String(date.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+
+    function formatNumber(value) {
+      const number = Number(value || 0);
+      return Number.isFinite(number) ? number.toLocaleString("zh-CN") : "-";
+    }
+
+    function formatYuan(cents) {
+      const value = Number(cents || 0) / 100;
+      return Number.isFinite(value) ? `¥${value.toLocaleString("zh-CN")}` : "-";
+    }
+
+    function formatMoney(value, currency = "RUB") {
+      const number = Number(value || 0);
+      return Number.isFinite(number) ? `${number.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} ${currency}` : "-";
+    }
+
+    function trimNumber(value, digits) {
+      return Number(value).toFixed(digits).replace(/\.?0+$/, "");
+    }
+
+    function formatBytes(value) {
+      const bytes = Number(value || 0);
+      if (!Number.isFinite(bytes)) return "-";
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+      if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${bytes} B`;
+    }
+
+    function emptyRow(colspan, text) {
+      return `<tr><td colspan="${colspan}" class="muted">${escapeHtml(text)}</td></tr>`;
+    }
+
+    function setText(id, value) {
+      document.getElementById(id).textContent = value;
+    }
+
+    function setMessage(text) {
+      message.textContent = text;
+      message.className = "message";
+    }
+
+    function showError(text) {
+      message.textContent = text;
+      message.className = "message error";
+      return new Error(text);
+    }
+
+    function submitOnEnter(fn) {
+      return (event) => {
+        if (event.key === "Enter") fn();
+      };
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function escapeAttribute(value) {
+      return escapeHtml(value).replaceAll("'", "&#39;");
+    }
+  </script>
+</body>
+</html>
