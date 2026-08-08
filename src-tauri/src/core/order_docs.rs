@@ -7,7 +7,6 @@ use crate::core::ozon_seller_web::{self, OzonSellerWebClient};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::fs;
@@ -302,10 +301,8 @@ async fn process_order_ref(
     if request.download_materials {
         let expected_offer_count = offer_ids.len();
         let material_offer_ids = offer_ids.clone();
-        let result = with_temporary_material_dir("baidu-materials", |temporary_dir| async move {
-            download_baidu_materials(request, &temporary_dir, &material_offer_ids).await
-        })
-        .await
+        let result = download_baidu_materials(request, &order_dir, &material_offer_ids)
+            .await
             .context("百度网盘素材下载失败")?;
         jobs.log(
             job_id,
@@ -447,22 +444,6 @@ fn merged_products(postings: &[Value]) -> Vec<Value> {
         }
     }
     rows
-}
-
-async fn with_temporary_material_dir<T, F, Fut>(prefix: &str, task: F) -> Result<T>
-where
-    F: FnOnce(PathBuf) -> Fut,
-    Fut: Future<Output = Result<T>>,
-{
-    let directory = std::env::temp_dir().join(format!("ozon-sjsq-{prefix}-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&directory).await?;
-    let result = task(directory.clone()).await;
-    let cleanup = fs::remove_dir_all(&directory).await;
-    match (result, cleanup) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Ok(_), Err(error)) => Err(error).context("无法清理临时云文件目录"),
-        (Err(error), _) => Err(error),
-    }
 }
 
 async fn download_baidu_materials(
@@ -637,18 +618,6 @@ mod tests {
         };
         assert!(ensure_baidu_download_complete(&failed, 3).is_err());
         assert!(ensure_baidu_download_complete(&ok, 4).is_err());
-    }
-
-    #[tokio::test]
-    async fn temporary_material_directory_is_removed_after_use() {
-        let result = with_temporary_material_dir("order-docs-test", |directory| async move {
-            fs::write(directory.join("SKU001.png"), b"material").await?;
-            Ok::<_, anyhow::Error>(directory)
-        })
-        .await
-        .unwrap();
-
-        assert!(!result.exists());
     }
 
     #[test]
