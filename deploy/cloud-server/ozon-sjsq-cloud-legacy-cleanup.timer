@@ -1,0 +1,9 @@
+﻿[Unit]
+Description=Daily cleanup for Ozon SJSQ legacy listing uploads
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

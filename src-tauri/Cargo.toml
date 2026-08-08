@@ -1,6 +1,6 @@
 [package]
 name = "ozon-sjsq"
-version = "0.3.14"
+version = "0.3.36"
 description = "Ozon single-machine seller workbench"
 authors = ["Codex"]
 edition = "2021"

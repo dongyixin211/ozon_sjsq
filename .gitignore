@@ -10,3 +10,4 @@ server/.env
 server/reports/
 src-tauri/target/
 fixtures/output/
+.worktrees/

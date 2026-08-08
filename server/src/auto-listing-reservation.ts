@@ -14,6 +14,24 @@ export interface ReservedAllocation {
   shopSnapshot: unknown;
 }
 
+export interface AutoListingSelectionKey {
+  sourceAssetId: string;
+  externalShopId: string;
+}
+
+export function filterOccupiedAutoListingSelections(
+  selections: AutoListingSelectionKey[],
+  occupiedKeys: Set<string>,
+) {
+  const occupied: AutoListingSelectionKey[] = [];
+  const available: AutoListingSelectionKey[] = [];
+  for (const selection of selections) {
+    const key = `${selection.sourceAssetId}:${selection.externalShopId}`;
+    (occupiedKeys.has(key) ? occupied : available).push(selection);
+  }
+  return { occupied, available };
+}
+
 export async function assertEnabledPlanShopsOwned(
   client: QueryClient,
   userId: string,

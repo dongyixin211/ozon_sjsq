@@ -16,7 +16,7 @@ use tokio::time::Duration;
 
 const IMPORT_BATCH_SIZE: usize = 100;
 const IMAGE_PREFLIGHT_TIMEOUT_SECONDS: u64 = 12;
-const SHOP_BATCH_CONCURRENCY: usize = 2;
+const SHOP_BATCH_CONCURRENCY: usize = 12;
 
 #[derive(Clone)]
 struct ImportCandidate {

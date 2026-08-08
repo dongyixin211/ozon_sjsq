@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkLocalAssistant } from "./localAssistant";
+import { checkLocalAssistant, preserveAssistantDuringTransientFailure } from "./localAssistant";
 
 function healthResponse() {
   return new Response(JSON.stringify({ protocolVersion: 4 }), { status: 200 });
@@ -39,5 +39,24 @@ describe("checkLocalAssistant", () => {
     await checkLocalAssistant();
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("assistant connection resilience", () => {
+  it("keeps the last connected state during a short busy timeout", () => {
+    const previous = { connected: true, compatible: true, state: "connected" as const, version: "0.3.29" };
+    const transient = { connected: false, state: "disconnected" as const, error: "本地助手连接超时" };
+
+    expect(preserveAssistantDuringTransientFailure(previous, transient, 1)).toEqual({
+      ...previous,
+      state: "checking",
+    });
+  });
+
+  it("reports a disconnect after the grace threshold", () => {
+    const previous = { connected: true, compatible: true, state: "connected" as const };
+    const transient = { connected: false, state: "disconnected" as const, error: "本地助手连接超时" };
+
+    expect(preserveAssistantDuringTransientFailure(previous, transient, 5)).toEqual(transient);
   });
 });

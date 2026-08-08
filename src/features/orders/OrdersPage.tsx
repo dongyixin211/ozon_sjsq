@@ -123,7 +123,7 @@ export function OrdersPage({ shops, settings, onChanged, onNavigate }: Props) {
   const [manualOrdersText, setManualOrdersText] = useState("");
   const [cookieShopId, setCookieShopId] = useState(() => restoreShopId(savedOrderDraft.cookieShopId, activeShops));
   const [sellerCookie, setSellerCookie] = useState("");
-  const [downloadMaterials, setDownloadMaterials] = useState(savedOrderDraft.downloadMaterials ?? true);
+  const [downloadMaterials, setDownloadMaterials] = useState(savedOrderDraft.downloadMaterials ?? false);
   const [baiduCookie, setBaiduCookie] = useState(settings.baiduCookie);
   const [baiduSearchDir, setBaiduSearchDir] = useState(savedOrderDraft.baiduSearchDir ?? "/");
   const [baiduRecursive, setBaiduRecursive] = useState(savedOrderDraft.baiduRecursive ?? true);

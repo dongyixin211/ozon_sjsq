@@ -1703,11 +1703,7 @@ pub fn start_listing_maintenance(
             || request.auto_generate_barcode
             || request.auto_add_to_action;
         let effective_request = ListingMaintenanceRequest {
-            interval_minutes: if request.interval_minutes > 0 {
-                request.interval_minutes
-            } else {
-                shop.maintenance_interval_minutes.unwrap_or(5)
-            },
+            interval_minutes: listing_maintenance::LISTING_MAINTENANCE_INTERVAL_MINUTES,
             auto_update_stock: if request_has_enabled_module {
                 request.auto_update_stock
             } else {
@@ -1772,7 +1768,7 @@ fn follow_pairs_for_shop(
     let runtime_for = |shop: &Shop| -> Result<follow::RuntimeOzonShop, String> {
         let (effective_shop, oss_secret) = db
             .shop_with_effective_oss(&shop.id)
-            .unwrap_or_else(|_| (shop.clone(), String::new()));
+            .map_err(to_string)?;
         Ok(follow::RuntimeOzonShop {
             shop: effective_shop,
             ozon_api_key: db.shop_api_key(&shop.id).map_err(to_string)?,

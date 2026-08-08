@@ -18,7 +18,7 @@ import { readAiSettings } from "../ai-settings.js";
 import { config } from "../config.js";
 import { pool } from "../db.js";
 import { AppError } from "../errors.js";
-import { assertManualAssetsAvailableForListing } from "../auto-listing-reservation.js";
+import { assertManualAssetsAvailableForListing, filterOccupiedAutoListingSelections } from "../auto-listing-reservation.js";
 import { refreshFeaturedGallery } from "../featured-gallery.js";
 import {
   getEnabledProductImageRule,
@@ -38,6 +38,7 @@ import {
   uploadObject,
   uploadPreparedImage,
 } from "../storage.js";
+import { directListingImageUrl } from "../listing-image-url.js";
 import { galleryAutoListingRoutes } from "./gallery-auto-listing-routes.js";
 const MAX_BATCH_UPLOAD_FILES = config.LEGACY_UPLOAD_MAX_FILES;
 const MAX_BATCH_UPLOAD_BYTES = config.LEGACY_UPLOAD_MAX_BYTES_MB * 1024 * 1024;
@@ -453,12 +454,16 @@ function parseLegacyListingCompleteBody(body) {
 }
 __name(parseLegacyListingCompleteBody, "parseLegacyListingCompleteBody");
 __name2(parseLegacyListingCompleteBody, "parseLegacyListingCompleteBody");
+function legacyListingStorageLimitBytes(env = process.env) {
+  const configuredGb = Number(env.LEGACY_LISTING_STORAGE_LIMIT_GB);
+  const limitGb = Number.isFinite(configuredGb) && configuredGb > 0 ? configuredGb : 50;
+  return Math.floor(limitGb * 1024 ** 3);
+}
+__name(legacyListingStorageLimitBytes, "legacyListingStorageLimitBytes");
+__name2(legacyListingStorageLimitBytes, "legacyListingStorageLimitBytes");
 function legacyListingStorageUsageTotals(input) {
   return {
-    usedBytes:
-      input.galleryBytes +
-      input.confirmedLegacyBytes +
-      input.reservedLegacyBytes,
+    usedBytes: input.confirmedLegacyBytes + input.reservedLegacyBytes,
   };
 }
 __name(legacyListingStorageUsageTotals, "legacyListingStorageUsageTotals");
@@ -1782,7 +1787,7 @@ async function galleryRoutes(app) {
             "\u7528\u6237\u4E0D\u5B58\u5728",
           );
         }
-        await assertGalleryStorageAvailable(
+        await assertLegacyListingStorageAvailable(
           request.currentUser.id,
           body.sizeBytes,
           client,
@@ -2585,9 +2590,27 @@ async function assertGalleryStorageAvailable(
   const quota = validateLegacyListingUploadQuota(usage, incomingBytes);
   if (!quota.ok) {
     throw new AppError(
-      403,
+      507,
       "GALLERY_STORAGE_LIMIT_EXCEEDED",
-      `\u56FE\u5E93\u5BB9\u91CF\u4E0D\u8DB3\uFF1A\u5DF2\u4F7F\u7528 ${formatStorageBytes(usage.usedBytes)}\uFF0C\u672C\u6B21\u9700\u8981 ${formatStorageBytes(incomingBytes)}\uFF0C\u4E0A\u9650 ${formatStorageBytes(usage.limitBytes)}`,
+      `\u666e\u901a\u56fe\u5E93\u7A7A\u95F4\u4E0D\u8DB3\uFF1A\u5F53\u524D\u5DF2\u4F7F\u7528 ${formatStorageBytes(usage.usedBytes)}\uFF0C\u672C\u6B21\u9700\u8981 ${formatStorageBytes(incomingBytes)}\uFF0C\u666E\u901A\u56FE\u5E93\u989D\u5EA6 ${formatStorageBytes(usage.limitBytes)}`,
+    );
+  }
+}
+async function assertLegacyListingStorageAvailable(
+  userId,
+  incomingBytes,
+  queryable = pool,
+) {
+  if (incomingBytes <= 0) {
+    return;
+  }
+  const usage = await readLegacyListingStorageUsage(userId, queryable);
+  const quota = validateLegacyListingUploadQuota(usage, incomingBytes);
+  if (!quota.ok) {
+    throw new AppError(
+      507,
+      "GALLERY_STORAGE_LIMIT_EXCEEDED",
+      `\u4E34\u65F6\u4E0A\u67B6\u56FE\u7247\u7A7A\u95F4\u4E0D\u8DB3\uFF1A\u5F53\u524D\u5DF2\u4F7F\u7528 ${formatStorageBytes(usage.usedBytes)}\uFF0C\u672C\u6B21\u4E0A\u4F20\u9700\u8981 ${formatStorageBytes(incomingBytes)}\uFF0C\u4E34\u65F6\u4E0A\u67B6\u989D\u5EA6 ${formatStorageBytes(usage.limitBytes)}\uFF1B\u56FE\u7247\u4FDD\u7559 1 \u5929\uFF0C\u7CFB\u7EDF\u5C06\u5728\u4E0B\u4E00\u6B21\u6E05\u7406\u4EFB\u52A1\u540E\u91CA\u653E\u7A7A\u95F4\uFF0C\u666E\u901A\u56FE\u5E93\u989D\u5EA6\u4E0D\u53D7\u5F71\u54CD`,
     );
   }
 }
@@ -2598,7 +2621,7 @@ async function readGalleryStorageUsage(userId, queryable = pool) {
     `
     SELECT
       u.gallery_storage_limit_bytes,
-      (COALESCE(gallery.used_bytes, 0) + COALESCE(legacy.used_bytes, 0) + COALESCE(grants.used_bytes, 0))::bigint AS used_bytes
+      COALESCE(gallery.used_bytes, 0)::bigint AS gallery_bytes
     FROM users u
     LEFT JOIN (
       SELECT uploaded_by_user_id, COALESCE(sum(size_bytes), 0)::bigint AS used_bytes
@@ -2611,6 +2634,26 @@ async function readGalleryStorageUsage(userId, queryable = pool) {
       )
       GROUP BY uploaded_by_user_id
     ) gallery ON gallery.uploaded_by_user_id = u.id
+    WHERE u.id = $1
+    `,
+    [userId],
+  );
+  const row = result.rows[0];
+  return {
+    limitBytes: Number(row?.gallery_storage_limit_bytes ?? 0),
+    usedBytes: Number(row?.gallery_bytes ?? 0),
+    galleryBytes: Number(row?.gallery_bytes ?? 0),
+    legacyBytes: 0,
+    grantBytes: 0,
+  };
+}
+async function readLegacyListingStorageUsage(userId, queryable = pool) {
+  const result = await queryable.query(
+    `
+    SELECT
+      COALESCE(legacy.used_bytes, 0)::bigint AS legacy_bytes,
+      COALESCE(grants.used_bytes, 0)::bigint AS grant_bytes
+    FROM users u
     LEFT JOIN (
       SELECT user_id, COALESCE(sum(size_bytes), 0)::bigint AS used_bytes
       FROM legacy_listing_uploads
@@ -2628,9 +2671,15 @@ async function readGalleryStorageUsage(userId, queryable = pool) {
     [userId],
   );
   const row = result.rows[0];
+  const totals = legacyListingStorageUsageTotals({
+    confirmedLegacyBytes: Number(row?.legacy_bytes ?? 0),
+    reservedLegacyBytes: Number(row?.grant_bytes ?? 0),
+  });
   return {
-    limitBytes: Number(row?.gallery_storage_limit_bytes ?? 0),
-    usedBytes: Number(row?.used_bytes ?? 0),
+    limitBytes: legacyListingStorageLimitBytes(),
+    usedBytes: totals.usedBytes,
+    legacyBytes: Number(row?.legacy_bytes ?? 0),
+    grantBytes: Number(row?.grant_bytes ?? 0),
   };
 }
 __name(readGalleryStorageUsage, "readGalleryStorageUsage");
@@ -3465,7 +3514,7 @@ async function createListingBatch(userId, body) {
           const image = imageById.get(imageAssetId);
           return [
             imageAssetId,
-            await ensureOzonListingImageUrl(image.objectKey, image.publicUrl),
+            directListingImageUrl(image.publicUrl),
           ];
         }),
       );
@@ -3533,13 +3582,7 @@ async function createListingBatch(userId, body) {
       const source = sourceById.get(selection.sourceAssetId);
       return { shop_id: shop.id, sku: String(source.sku) };
     });
-    await assertDailyListingQuota(
-      client,
-      userId,
-      body.assets,
-      shopsByExternalId,
-      targetByExternalId,
-    );
+    let listingAssets = body.assets;
     const occupiedResult = await client.query(
       `
       SELECT occupied.sku, occupied.shop_id AS "shopId", occupied.source
@@ -3567,11 +3610,64 @@ async function createListingBatch(userId, body) {
         );
         return `${row.sku}${shop ? ` / ${shop.name}` : ""}`;
       });
-      throw new AppError(
-        409,
-        "ASSET_ALREADY_SELECTED",
-        `\u4EE5\u4E0B\u56FE\u7247\u5DF2\u7ECF\u5728\u5BF9\u5E94\u5E97\u94FA\u88AB\u9009\u62E9\u6216\u4E0A\u4F20\uFF0C\u4E0D\u80FD\u91CD\u590D\u4F7F\u7528\uFF1A${[...new Set(labels)].slice(0, 8).join("\u3001")}`,
+      if (!body.autoListingRunId) {
+        throw new AppError(
+          409,
+          "ASSET_ALREADY_SELECTED",
+          `\u4ee5\u4e0b\u56fe\u7247\u5df2\u7ecf\u5728\u5bf9\u5e94\u5e97\u94fa\u88ab\u9009\u62e9\u6216\u4e0a\u4f20\uff0c\u4e0d\u80fd\u91cd\u590d\u4f7f\u7528\uff1a${[...new Set(labels)].slice(0, 8).join("\u3001")}`,
+        );
+      }
+      const occupiedSourceKeys = new Set(
+        occupiedResult.rows.flatMap((row) => body.assets
+          .filter((selection) => {
+            const shop = shopsByExternalId.get(selection.externalShopId);
+            const source = sourceById.get(selection.sourceAssetId);
+            return shop.id === String(row.shopId) && String(source.sku) === String(row.sku);
+          })
+          .map((selection) => `${selection.sourceAssetId}:${selection.externalShopId}`)),
       );
+      const filtered = filterOccupiedAutoListingSelections(body.assets, occupiedSourceKeys);
+      for (const selection of filtered.occupied) {
+        await client.query(
+          `UPDATE gallery_auto_listing_assignments
+           SET status='completed',
+               last_error='\u5bf9\u5e94\u5e97\u94fa\u5df2\u6709\u76f8\u540c\u5546\u54c1\u7684\u4e0a\u67b6\u8bb0\u5f55\uff0c\u81ea\u52a8\u8df3\u8fc7\u91cd\u590d\u53d1\u5e03',
+               updated_at=now()
+           WHERE user_id=$1
+             AND run_id=$2
+             AND source_asset_id=$3::uuid
+             AND external_shop_id=$4
+             AND status IN ('reserved','preparing','ready','submitting')`,
+          [userId, body.autoListingRunId, selection.sourceAssetId, selection.externalShopId],
+        );
+      }
+      listingAssets = filtered.available;
+    }
+    await assertDailyListingQuota(
+      client,
+      userId,
+      listingAssets,
+      shopsByExternalId,
+      targetByExternalId,
+    );
+    if (listingAssets.length === 0) {
+      await client.query(
+        `UPDATE gallery_auto_listing_runs run SET status=summary.status,updated_at=now()
+         FROM (SELECT CASE
+           WHEN count(*) FILTER (WHERE status <> 'released')=0 THEN 'completed'
+           WHEN bool_and(status IN ('completed','released')) THEN 'completed'
+           WHEN bool_or(status='submitting') THEN 'submitting'
+           WHEN bool_or(status IN ('preparing','ready')) THEN 'preparing'
+           WHEN bool_or(status='reserved') THEN 'waiting'
+           WHEN bool_or(status='failed') THEN 'failed'
+           ELSE 'paused' END AS status
+           FROM gallery_auto_listing_assignments WHERE user_id=$1 AND run_id=$2) summary
+         WHERE run.id=$2 AND run.user_id=$1`,
+        [userId, body.autoListingRunId],
+      );
+      await client.query("COMMIT");
+      transactionStarted = false;
+      throw new AppError(409, "AUTO_LISTING_NO_NEW_ASSETS", "\u672c\u6279\u6b21\u7d20\u6750\u5747\u5df2\u5728\u5bf9\u5e94\u5e97\u94fa\u5b58\u5728\uff0c\u5df2\u8df3\u8fc7\u91cd\u590d\u53d1\u5e03");
     }
     if (false) {
       const skus = [
@@ -3749,7 +3845,7 @@ async function createListingBatch(userId, body) {
     transactionStarted = false;
     return {
       ...batchResult.rows[0],
-      imageSets: body.assets.map((selection) => {
+      imageSets: listingAssets.map((selection) => {
         const source = sourceById.get(selection.sourceAssetId);
         const target = targetByExternalId.get(selection.externalShopId);
         const shop = shopsByExternalId.get(selection.externalShopId);
@@ -4702,7 +4798,7 @@ async function repairListingBatchImageUrls(userId, batchId) {
       if (!objectKey || !publicUrl) {
         continue;
       }
-      repairedUrls.push(await ensureOzonListingImageUrl(objectKey, publicUrl));
+      repairedUrls.push(directListingImageUrl(publicUrl));
     }
     if (
       repairedUrls.length === 0 ||
@@ -4800,7 +4896,7 @@ async function listListingImageRepairItems(userId, query) {
       if (!objectKey || !publicUrl) {
         continue;
       }
-      repairedUrls.push(await ensureOzonListingImageUrl(objectKey, publicUrl));
+      repairedUrls.push(directListingImageUrl(publicUrl));
     }
     const imageUrls =
       repairedUrls.length > 0 ? repairedUrls : (row.imageUrls ?? []);
@@ -4869,7 +4965,7 @@ async function resolveOzonListingImageUrls(userId, imageAssetIds) {
   const imageUrls = [];
   for (const row of rows) {
     imageUrls.push(
-      await ensureOzonListingImageUrl(row.objectKey, row.publicUrl),
+      directListingImageUrl(row.publicUrl),
     );
   }
   return imageUrls;
@@ -4930,46 +5026,6 @@ async function updateListingRepairImageRecord(userId, item, imageUrls) {
 }
 __name(updateListingRepairImageRecord, "updateListingRepairImageRecord");
 __name2(updateListingRepairImageRecord, "updateListingRepairImageRecord");
-async function ensureOzonListingImageUrl(objectKey, fallbackUrl) {
-  const ozonObjectKey = ozonListingObjectKeyForOriginal(objectKey);
-  try {
-    if (!(await objectExists(ozonObjectKey))) {
-      const buffer = await readObjectBuffer(objectKey);
-      const prepared = await sharp(buffer)
-        .rotate()
-        .resize({
-          width: OZON_IMAGE_MAX_WIDTH,
-          height: OZON_IMAGE_MAX_HEIGHT,
-          fit: "inside",
-          withoutEnlargement: true,
-        })
-        .jpeg({
-          quality: OZON_IMAGE_QUALITY,
-          mozjpeg: true,
-          progressive: false,
-        })
-        .toBuffer();
-      await uploadObject(ozonObjectKey, prepared, "image/jpeg");
-    }
-    return publicUrlForObjectKey(ozonObjectKey);
-  } catch (error) {
-    console.warn(
-      { objectKey, error },
-      "prepare ozon listing image failed, using original gallery url",
-    );
-    return fallbackUrl;
-  }
-}
-__name(ensureOzonListingImageUrl, "ensureOzonListingImageUrl");
-__name2(ensureOzonListingImageUrl, "ensureOzonListingImageUrl");
-function ozonListingObjectKeyForOriginal(objectKey) {
-  const normalized = objectKey.replace(/\\/g, "/").replace(/^\/+/, "");
-  const withoutGalleryPrefix = normalized.replace(/^gallery\//, "");
-  const withoutExtension = withoutGalleryPrefix.replace(/\.[^.]+$/, "");
-  return `gallery-ozon-q50/${withoutExtension}.jpg`;
-}
-__name(ozonListingObjectKeyForOriginal, "ozonListingObjectKeyForOriginal");
-__name2(ozonListingObjectKeyForOriginal, "ozonListingObjectKeyForOriginal");
 function arraysEqual(left, right) {
   return (
     left.length === right.length &&
@@ -5646,6 +5702,7 @@ export {
   buildLegacyListingUploadObjectKey,
   galleryRoutes,
   insertGalleryAsset,
+  legacyListingStorageLimitBytes,
   legacyListingStorageUsageTotals,
   legacyListingUploadCompleteRecord,
   parseLegacyListingCompleteBody,

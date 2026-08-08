@@ -14,7 +14,8 @@ export interface LocalAssistantStatus {
 const LOCAL_ASSISTANT_URL = "http://127.0.0.1:17641";
 export const LOCAL_ASSISTANT_PROTOCOL_VERSION = 4;
 export const LOCAL_ASSISTANT_DEEP_LINK = "ozon-sjsq://open";
-const NORMAL_HEALTH_TIMEOUT_MS = 2_000;
+const NORMAL_HEALTH_TIMEOUT_MS = 10_000;
+const ASSISTANT_TRANSIENT_FAILURE_LIMIT = 5;
 let activeProbe: Promise<LocalAssistantStatus> | null = null;
 
 export interface CloudSyncStatus {
@@ -27,6 +28,16 @@ export interface CloudSyncStatus {
   lastError?: string;
 }
 
+export function preserveAssistantDuringTransientFailure(
+  previous: LocalAssistantStatus,
+  next: LocalAssistantStatus,
+  consecutiveFailures: number,
+): LocalAssistantStatus {
+  if (previous.connected && !next.connected && consecutiveFailures < ASSISTANT_TRANSIENT_FAILURE_LIMIT) {
+    return { ...previous, state: "checking", error: undefined };
+  }
+  return next;
+}
 export function checkLocalAssistant(timeoutMs = NORMAL_HEALTH_TIMEOUT_MS): Promise<LocalAssistantStatus> {
   if (!activeProbe) {
     activeProbe = probeLocalAssistant(timeoutMs).finally(() => {
@@ -41,8 +52,8 @@ export async function checkLocalAssistantWithGracePeriod(options: {
   settleForMs?: number;
   retryDelayMs?: number;
 } = {}): Promise<LocalAssistantStatus> {
-  const timeoutMs = options.timeoutMs ?? 700;
-  const settleForMs = options.settleForMs ?? 5000;
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  const settleForMs = options.settleForMs ?? 30_000;
   const retryDelayMs = options.retryDelayMs ?? 250;
   const startedAt = Date.now();
   let lastStatus: LocalAssistantStatus = { connected: false, state: "disconnected", error: "本地助手未启动" };

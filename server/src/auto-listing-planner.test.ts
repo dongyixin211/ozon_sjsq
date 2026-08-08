@@ -1,29 +1,54 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 import {
   allocateRoundRobin,
   assertAssignmentBatchUpdate,
   calculateRemainingShopCapacity,
+  calculateAvailableReservationSlots,
   calculateSafeCreateCount,
   canReleaseAssignment,
   assertAssignmentStatusTransition,
   validateAutoListingPlan,
+  validateAutoListingLaunch,
+  shouldReleaseFailedAssignment,
 } from "./auto-listing-planner.js";
 
-test("reserves five percent and at least two create slots", () => {
-  assert.equal(calculateSafeCreateCount({ createRemaining: 100, totalRemaining: 500 }, 1000), 95);
-  assert.equal(calculateSafeCreateCount({ createRemaining: 10, totalRemaining: 500 }, 1000), 8);
-  assert.equal(calculateSafeCreateCount({ createRemaining: 2, totalRemaining: 500 }, 1000), 0);
+test("uses the full live create quota unless a reserve is requested", () => {
+  assert.equal(calculateSafeCreateCount({ createRemaining: 100, totalRemaining: 500 }, 1000), 100);
+  assert.equal(calculateSafeCreateCount({ createRemaining: 100, totalRemaining: 500 }, 1000, 0.05), 95);
+  assert.equal(calculateSafeCreateCount({ createRemaining: 2, totalRemaining: 500 }, 1000), 2);
   assert.equal(calculateSafeCreateCount({ createRemaining: 100, totalRemaining: 3 }, 1000), 3);
   assert.equal(calculateSafeCreateCount({ createRemaining: 100, totalRemaining: 500 }, 2), 2);
 });
 
-test("subtracts outstanding assignments once from a shop reservation window", () => {
-  assert.equal(calculateRemainingShopCapacity(
-    { createRemaining: 100, totalRemaining: 500 },
-    10,
-    15,
-  ), 5);
+test("limits a shop by daily target, completed items, outstanding items, and live quota", () => {
+  assert.equal(calculateRemainingShopCapacity({ createRemaining: 100, totalRemaining: 500 }, 100, 0, 10, 30), 30);
+  assert.equal(calculateRemainingShopCapacity({ createRemaining: 100, totalRemaining: 500 }, 100, 40, 10, 15), 15);
+  assert.equal(calculateRemainingShopCapacity({ createRemaining: 4, totalRemaining: 500 }, 100, 0, 0, 30), 4);
+});
+
+test("reservation window is applied independently to every shop", () => {
+  const shops = Array.from({ length: 12 }, (_, index) => ({
+    externalShopId: String(index + 1),
+    capacity: 100,
+    outstanding: 0,
+  }));
+  assert.equal(calculateAvailableReservationSlots(shops, 30), 360);
+  assert.equal(
+    calculateAvailableReservationSlots([
+      { externalShopId: "A", capacity: 100, outstanding: 25 },
+      { externalShopId: "B", capacity: 4, outstanding: 0 },
+    ], 30),
+    9,
+  );
+});
+
+test("counts reservation slots per shop instead of as one global window", () => {
+  const shops = [
+    { externalShopId: "A", capacity: 100, outstanding: 0 },
+    { externalShopId: "B", capacity: 100, outstanding: 20 },
+  ];
+  assert.equal(calculateAvailableReservationSlots(shops, 30), 40);
 });
 
 test("round robin redistributes after a shop reaches quota", () => {
@@ -45,11 +70,31 @@ test("round robin fills the least outstanding shop first", () => {
   ]);
 });
 
+test("reports missing shop quota before automatic listing starts", () => {
+  const result = validateAutoListingLaunch(
+    [
+      { externalShopId: "shop-a", shopName: "?? A" },
+      { externalShopId: "shop-b", shopName: "?? B" },
+    ],
+    { "shop-a": { dailyCreateRemaining: 100, totalRemaining: 100 } },
+  );
+  assert.deepEqual(result, {
+    ok: false,
+    issues: [{ externalShopId: "shop-b", shopName: "?? B", reason: "quota_missing" }],
+  });
+});
+
 test("rejects duplicate asset identifiers", () => {
   assert.throws(
     () => allocateRoundRobin([{ externalShopId: "A", capacity: 2 }], ["1", "1"]),
     /duplicate asset id/i,
   );
+});
+
+test("releases terminal failures so the next reservation can refill them", () => {
+  assert.equal(shouldReleaseFailedAssignment("failed", 2), false);
+  assert.equal(shouldReleaseFailedAssignment("failed", 3), true);
+  assert.equal(shouldReleaseFailedAssignment("preparing", 3), false);
 });
 
 test("only untouched reserved assignments can be released", () => {
@@ -131,3 +176,5 @@ test("keeps an assignment bound to its first listing batch", () => {
   assert.throws(() => assertAssignmentBatchUpdate("batch-a", null), /batch/i);
   assert.throws(() => assertAssignmentBatchUpdate("batch-a", "batch-b"), /batch/i);
 });
+
+

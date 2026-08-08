@@ -3187,7 +3187,7 @@ dependencies = [
 
 [[package]]
 name = "ozon-sjsq"
-version = "0.3.14"
+version = "0.3.36"
 dependencies = [
  "aes-gcm",
  "anyhow",

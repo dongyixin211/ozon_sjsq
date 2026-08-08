@@ -1,4 +1,4 @@
-use crate::core::db::{AutoListingSchedulerRecord, Database};
+﻿use crate::core::db::{AutoListingSchedulerRecord, Database};
 use crate::core::models::{
     AutoListingRequest, JobKind, JobStatus, LocalMockupRenderAssetInput, LocalMockupRenderRequest,
 };
@@ -99,6 +99,10 @@ pub fn decide_next_action(input: SchedulerDecisionInput) -> SchedulerAction {
     }
 }
 
+fn is_terminal_run_status(status: &str) -> bool {
+    matches!(status, "completed" | "failed")
+}
+
 fn should_prepare_assignment(status: &str) -> bool {
     matches!(status, "reserved" | "preparing")
 }
@@ -112,6 +116,12 @@ fn resume_run_id<'a>(
 
 fn should_reconcile_submission_job(stage: Option<&str>, kind: JobKind) -> bool {
     stage == Some("submitting") && kind == JobKind::AutoListing
+}
+
+fn is_empty_auto_listing_batch_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("AUTO_LISTING_NO_NEW_ASSETS")
+        || message.contains("\u{672c}\u{6279}\u{6b21}\u{7d20}\u{6750}\u{5747}\u{5df2}\u{5728}\u{5bf9}\u{5e94}\u{5e97}\u{94fa}\u{5b58}\u{5728}")
 }
 
 fn cloud_request_timeout(path: &str) -> Duration {
@@ -173,6 +183,10 @@ pub struct PauseSchedulerRequest {
     pub paused: bool,
 }
 
+fn default_scheduler_batch_size() -> u32 {
+    20
+}
+
 fn default_true() -> bool {
     true
 }
@@ -224,8 +238,11 @@ struct CloudPlan {
     start_minute: u32,
     end_minute: u32,
     enabled: bool,
+    #[serde(default = "default_scheduler_batch_size")]
+    batch_size: u32,
     #[serde(default)]
     updated_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_vec_or_default")]
     shop_configs: Vec<CloudPlanShop>,
 }
 
@@ -260,6 +277,16 @@ where
     Option::<Vec<T>>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
+fn parse_top_level_vec<T>(value: Option<&Value>) -> Result<Vec<T>>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    match value {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(value) => serde_json::from_value(value.clone()).context("浜戠鏁扮粍瀛楁鏍煎紡閿欒"),
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CloudAssignment {
@@ -277,6 +304,11 @@ enum PlanTickOutcome {
     Advance,
 }
 
+fn has_unbatched_preparable_assignments(assignments: &[CloudAssignment]) -> bool {
+    assignments.iter().any(|assignment| {
+        assignment.batch_id.is_none() && should_prepare_assignment(&assignment.status)
+    })
+}
 fn record_has_active_work(record: &AutoListingSchedulerRecord) -> bool {
     record.cloud_run_id.is_some()
         || record.local_job_id.is_some()
@@ -365,6 +397,20 @@ impl AutoListingScheduler {
         });
     }
 
+    pub async fn resume_saved_session(
+        &self,
+        app: tauri::AppHandle,
+        account_id: &str,
+        plan_id: Option<&str>,
+    ) -> Result<SchedulerStatus, String> {
+        self.restore_sessions();
+        if !self.sessions.lock().map_err(|_| "scheduler sessions poisoned".to_string())?.contains_key(account_id) {
+            return Err("自动上品登录会话不存在，请重新登录云端账号".into());
+        }
+        self.tick_account(app, account_id, plan_id, true).await;
+        self.status(account_id).map_err(|error| error.to_string())
+    }
+
     pub async fn tick(
         &self,
         app: tauri::AppHandle,
@@ -383,7 +429,7 @@ impl AutoListingScheduler {
         let mut record = records
             .drain(..)
             .find(|item| item.account_id == request.account_id && item.plan_id == request.plan_id)
-            .ok_or_else(|| "自动上品方案尚未在本地调度器注册".to_string())?;
+            .ok_or_else(|| "鑷姩涓婂搧鏂规灏氭湭鍦ㄦ湰鍦拌皟搴﹀櫒娉ㄥ唽".to_string())?;
         record.paused = request.paused;
         self.save_record(&record)
             .map_err(|error| error.to_string())?;
@@ -500,7 +546,7 @@ impl AutoListingScheduler {
             .tick_account_inner(app, account_id, only_plan_id, force)
             .await
         {
-            eprintln!("自动上品调度失败: {error}");
+            eprintln!("鑷姩涓婂搧璋冨害澶辫触: {error}");
         }
         if let Ok(mut active) = self.active_accounts.lock() {
             active.remove(account_id);
@@ -525,7 +571,7 @@ impl AutoListingScheduler {
             .cloud(&session, Method::GET, "/gallery/auto-listing/plans", None)
             .await?;
         let plans: Vec<CloudPlan> =
-            serde_json::from_value(plans_value.get("plans").cloned().unwrap_or_default())?;
+            parse_top_level_vec(plans_value.get("plans")).context("瑙ｆ瀽鑷姩涓婂搧鏂规澶辫触")?;
         let active_plan_id = if only_plan_id.is_none() {
             self.records()?
                 .into_iter()
@@ -551,7 +597,7 @@ impl AutoListingScheduler {
                     plan_index += 1;
                 }
                 Err(error) => {
-                    self.record_error(&session, &plan_id, &error.to_string());
+                    self.record_error(&session, &plan_id, &format!("{error:#}"));
                     if self.plan_has_active_work(&session.account_id, &plan_id)? {
                         break;
                     }
@@ -603,7 +649,7 @@ impl AutoListingScheduler {
             )
             .await?;
         let runs: Vec<CloudRun> =
-            serde_json::from_value(runs_value.get("runs").cloned().unwrap_or_default())?;
+            parse_top_level_vec(runs_value.get("runs")).context("瑙ｆ瀽鑷姩涓婂搧杩愯璁板綍澶辫触")?;
         let executing = runs
             .iter()
             .find(|run| matches!(run.status.as_str(), "preparing" | "submitting"));
@@ -612,6 +658,14 @@ impl AutoListingScheduler {
             executing.map(|run| run.id.as_str()),
         ) {
             if let Some(run) = runs.iter().find(|run| run.id == run_id) {
+                if is_terminal_run_status(&run.status) {
+                    record.cloud_run_id = None;
+                    record.local_job_id = None;
+                    record.stage = None;
+                    record.last_error = None;
+                    self.save_record(&record)?;
+                    return Ok(PlanTickOutcome::Continue);
+                }
                 record.last_quota_date = Some(Local::now().date_naive().to_string());
                 self.save_record(&record)?;
                 self.execute_run(app, session, &plan, run.clone(), &mut record)
@@ -738,19 +792,22 @@ impl AutoListingScheduler {
         run: CloudRun,
         record: &mut AutoListingSchedulerRecord,
     ) -> Result<()> {
-        if let Some(batch_id) = run
-            .assignments
-            .iter()
-            .find_map(|item| item.batch_id.clone())
-        {
+        if !has_unbatched_preparable_assignments(&run.assignments) {
+            if let Some(batch_id) = run
+                .assignments
+                .iter()
+                .find_map(|item| item.batch_id.clone())
+            {
             return self
-                .start_or_reconcile_batch(app, session, plan, &run, &batch_id, record)
-                .await;
+                    .start_or_reconcile_batch(app, session, plan, &run, &batch_id, record)
+                    .await;
+            }
         }
         let reserved = run
             .assignments
             .iter()
             .filter(|item| should_prepare_assignment(&item.status))
+            .take(plan.batch_size.max(1) as usize)
             .cloned()
             .collect::<Vec<_>>();
         if reserved.is_empty() {
@@ -823,7 +880,7 @@ impl AutoListingScheduler {
                             current
                                 .result_path
                                 .or(current.output_path)
-                                .ok_or_else(|| anyhow!("套图结果路径缺失"))?,
+                                .ok_or_else(|| anyhow!("濂楀浘缁撴灉璺緞缂哄け"))?,
                         )
                         .map_err(anyhow::Error::msg)?
                     }
@@ -831,7 +888,7 @@ impl AutoListingScheduler {
                         return Err(anyhow!(current
                             .last_error
                             .or(current.error)
-                            .unwrap_or_else(|| "套图失败".into())))
+                            .unwrap_or_else(|| "濂楀浘澶辫触".into())))
                     }
                     _ => tokio::time::sleep(Duration::from_secs(1)).await,
                 }
@@ -847,17 +904,17 @@ impl AutoListingScheduler {
                     && !item.assets.is_empty()
             }) else {
                 failed_updates.push(
-                    json!({"assignmentId":assignment.id,"status":"failed","lastError":"套图失败"}),
+                    json!({"assignmentId":assignment.id,"status":"failed","lastError":"濂楀浘澶辫触"}),
                 );
                 continue;
             };
             let Some(image_id) = item.assets[0].get("id").and_then(Value::as_str) else {
-                failed_updates.push(json!({"assignmentId":assignment.id,"status":"failed","lastError":"套图结果缺少资产 ID"}));
+                failed_updates.push(json!({"assignmentId":assignment.id,"status":"failed","lastError":"濂楀浘缁撴灉缂哄皯璧勪骇 ID"}));
                 continue;
             };
             let title_result = self.cloud(session, Method::POST, "/gallery/titles/generate", Some(json!({"sourceAssetId":assignment.source_asset_id,"imageAssetId":image_id,"prompt":plan.title_prompt}))).await;
             let Ok(title_value) = title_result else {
-                failed_updates.push(json!({"assignmentId":assignment.id,"status":"failed","lastError":"标题生成失败"}));
+                failed_updates.push(json!({"assignmentId":assignment.id,"status":"failed","lastError":"鏍囬鐢熸垚澶辫触"}));
                 continue;
             };
             let title = title_value["title"]
@@ -867,7 +924,7 @@ impl AutoListingScheduler {
                 .to_string();
             if title.is_empty() {
                 failed_updates.push(
-                    json!({"assignmentId":assignment.id,"status":"failed","lastError":"标题为空"}),
+                    json!({"assignmentId":assignment.id,"status":"failed","lastError":"鏍囬涓虹┖"}),
                 );
                 continue;
             }
@@ -878,10 +935,39 @@ impl AutoListingScheduler {
             self.push_progress(session, record, failed_updates).await?;
         }
         if assets.is_empty() {
-            return Err(anyhow!("预留批次没有可执行资产"));
+            return Err(anyhow!("预留批次没有可执行素材"));
         }
         let shop_targets = plan.shop_configs.iter().filter(|shop| assets.iter().any(|asset| asset["externalShopId"] == shop.external_shop_id)).map(|shop| json!({"externalShopId":shop.external_shop_id,"id":shop.product_template_id,"name":shop.product_template_name,"configSnapshot":shop})).collect::<Vec<_>>();
-        let batch = self.cloud(session, Method::POST, "/gallery/listing-batches", Some(json!({"productImageRuleId":plan.product_image_rule_id,"mockupTemplateId":plan.mockup_template_id,"mockupTemplateName":plan.mockup_template_name,"titlePrompt":plan.title_prompt,"autoListingRunId":run.id,"shopTargets":shop_targets,"assets":assets}))).await?["batch"].clone();
+        let batch_value = match self.cloud(session, Method::POST, "/gallery/listing-batches", Some(json!({"productImageRuleId":plan.product_image_rule_id,"mockupTemplateId":plan.mockup_template_id,"mockupTemplateName":plan.mockup_template_name,"titlePrompt":plan.title_prompt,"autoListingRunId":run.id,"shopTargets":shop_targets,"assets":assets}))).await {
+            Ok(value) => value,
+            Err(error) if is_empty_auto_listing_batch_error(&error) => {
+                record.local_job_id = None;
+                record.stage = None;
+                record.last_error = None;
+                self.save_record(record)?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        let batch = batch_value["batch"].clone();
+        let accepted_source_asset_ids = batch["imageSets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item["sourceAssetId"].as_str())
+            .collect::<HashSet<_>>();
+        successful_assignment_ids.retain(|assignment_id| {
+            reserved
+                .iter()
+                .find(|assignment| assignment.id == *assignment_id)
+                .is_some_and(|assignment| accepted_source_asset_ids.contains(assignment.source_asset_id.as_str()))
+        });
+        if successful_assignment_ids.is_empty() {
+            record.local_job_id = None;
+            record.stage = None;
+            self.save_record(record)?;
+            return Ok(());
+        }
         let batch_id = batch["id"]
             .as_str()
             .ok_or_else(|| anyhow!("listing batch id missing"))?
@@ -1006,13 +1092,15 @@ impl AutoListingScheduler {
     ) -> Result<()> {
         record.pending_progress = Value::Array(updates.clone());
         self.save_record(record)?;
-        self.cloud(
-            session,
-            Method::POST,
-            "/gallery/auto-listing/assignments/progress",
-            Some(json!({"updates":updates})),
-        )
-        .await?;
+        for chunk in updates.chunks(200) {
+            self.cloud(
+                session,
+                Method::POST,
+                "/gallery/auto-listing/assignments/progress",
+                Some(json!({"updates":chunk})),
+            )
+            .await?;
+        }
         record.pending_progress = json!([]);
         self.save_record(record)
     }
@@ -1026,14 +1114,16 @@ impl AutoListingScheduler {
             .as_array()
             .is_some_and(|items| !items.is_empty())
         {
-            let updates = record.pending_progress.clone();
-            self.cloud(
-                session,
-                Method::POST,
-                "/gallery/auto-listing/assignments/progress",
-                Some(json!({"updates":updates})),
-            )
-            .await?;
+            let updates = record.pending_progress.as_array().cloned().unwrap_or_default();
+            for chunk in updates.chunks(200) {
+                self.cloud(
+                    session,
+                    Method::POST,
+                    "/gallery/auto-listing/assignments/progress",
+                    Some(json!({"updates":chunk})),
+                )
+                .await?;
+            }
             record.pending_progress = json!([]);
             self.save_record(record)?;
         }
@@ -1138,7 +1228,7 @@ fn build_auto_listing_request(
         .iter()
         .filter(|shop| external_ids.contains(shop.external_shop_id.as_str()))
         .collect::<Vec<_>>();
-    serde_json::from_value(json!({"batchId":batch["id"],"cloudApiBaseUrl":session.base_url,"cloudAuthToken":session.auth_token,"cloudExternalShopIdByShopId":shops.iter().map(|shop|(shop.local_shop_id.clone(),shop.external_shop_id.clone())).collect::<HashMap<_,_>>(),"mockupTemplateId":batch["mockupTemplateId"],"mockupTemplateName":batch["mockupTemplateName"],"items":image_sets.iter().filter(|item|item["completedAt"].is_null()).map(|item|json!({"sourceAssetId":item["sourceAssetId"],"sourceSku":item["sourceSku"],"shopId":shops.iter().find(|shop|item["externalShopId"]==shop.external_shop_id).map(|shop|shop.local_shop_id.as_str()).unwrap_or_default(),"title":item["title"],"imageUrls":item["imageUrls"]})).collect::<Vec<_>>(),"shopConfigs":shops.iter().map(|shop|json!({"shopId":shop.local_shop_id,"templateProduct":shop.template_product,"templateVideoLinks":[],"uploadTemplateVideo":false,"autoGenerateBarcode":shop.auto_generate_barcode,"autoUpdateStock":shop.auto_update_stock,"autoAddToAction":shop.auto_add_to_action,"postListingDelayMinutes":0,"actionDelayMinutes":0,"actionRetryCount":1,"actionRetryIntervalMinutes":10})).collect::<Vec<_>>() })).context("自动上品请求构建失败")
+    serde_json::from_value(json!({"batchId":batch["id"],"cloudApiBaseUrl":session.base_url,"cloudAuthToken":session.auth_token,"cloudExternalShopIdByShopId":shops.iter().map(|shop|(shop.local_shop_id.clone(),shop.external_shop_id.clone())).collect::<HashMap<_,_>>(),"mockupTemplateId":batch["mockupTemplateId"],"mockupTemplateName":batch["mockupTemplateName"],"items":image_sets.iter().filter(|item|item["completedAt"].is_null()).map(|item|json!({"sourceAssetId":item["sourceAssetId"],"sourceSku":item["sourceSku"],"shopId":shops.iter().find(|shop|item["externalShopId"]==shop.external_shop_id).map(|shop|shop.local_shop_id.as_str()).unwrap_or_default(),"title":item["title"],"imageUrls":item["imageUrls"]})).collect::<Vec<_>>(),"shopConfigs":shops.iter().map(|shop|json!({"shopId":shop.local_shop_id,"templateProduct":shop.template_product,"templateVideoLinks":[],"uploadTemplateVideo":false,"autoGenerateBarcode":shop.auto_generate_barcode,"autoUpdateStock":shop.auto_update_stock,"autoAddToAction":shop.auto_add_to_action,"postListingDelayMinutes":0,"actionDelayMinutes":0,"actionRetryCount":1,"actionRetryIntervalMinutes":10})).collect::<Vec<_>>() })).context("鑷姩涓婂搧璇锋眰鏋勫缓澶辫触")
 }
 
 #[cfg(test)]
@@ -1156,6 +1246,7 @@ mod tests {
             start_minute,
             end_minute: 22 * 60,
             enabled: true,
+            batch_size: 20,
             updated_at: Some(updated_at.into()),
             shop_configs: Vec::new(),
         }
@@ -1293,6 +1384,33 @@ mod tests {
         assert!(run.assignments.is_empty());
     }
 
+
+    #[test]
+    fn top_level_cloud_arrays_treat_missing_and_null_as_empty() {
+        let missing: Vec<CloudRun> = parse_top_level_vec(None).unwrap();
+        let null: Vec<CloudRun> = parse_top_level_vec(Some(&Value::Null)).unwrap();
+
+        assert!(missing.is_empty());
+        assert!(null.is_empty());
+    }
+    #[test]
+    fn cloud_plan_treats_null_shop_configs_as_empty() {
+        let plan: CloudPlan = serde_json::from_value(json!({
+            "id": "plan-a",
+            "productImageRuleId": "rule-a",
+            "mockupTemplateId": "mockup-a",
+            "mockupTemplateName": "Mockup",
+            "titlePrompt": "Title",
+            "startMinute": 480,
+            "endMinute": 1320,
+            "enabled": true,
+            "shopConfigs": null
+        }))
+        .unwrap();
+
+        assert!(plan.shop_configs.is_empty());
+    }
+
     #[test]
     fn date_rollover_refreshes_quota_before_planning() {
         let mut state = input(at(29, 8, 0));
@@ -1410,6 +1528,42 @@ mod tests {
     }
 
     #[test]
+    fn retries_unbatched_preparing_assignments_before_existing_batch() {
+        let assignments = vec![
+            CloudAssignment {
+                id: "completed".into(),
+                source_asset_id: "asset-completed".into(),
+                external_shop_id: "shop".into(),
+                batch_id: Some("existing-batch".into()),
+                status: "completed".into(),
+            },
+            CloudAssignment {
+                id: "retry".into(),
+                source_asset_id: "asset-retry".into(),
+                external_shop_id: "shop".into(),
+                batch_id: None,
+                status: "preparing".into(),
+            },
+        ];
+        assert!(has_unbatched_preparable_assignments(&assignments));
+    }
+    #[test]
+    fn empty_auto_listing_batch_error_is_recoverable() {
+        assert!(is_empty_auto_listing_batch_error(&anyhow!("AUTO_LISTING_NO_NEW_ASSETS")));
+        assert!(is_empty_auto_listing_batch_error(&anyhow!("\u{672c}\u{6279}\u{6b21}\u{7d20}\u{6750}\u{5747}\u{5df2}\u{5728}\u{5bf9}\u{5e94}\u{5e97}\u{94fa}\u{5b58}\u{5728}\u{ff0c}\u{5df2}\u{8df3}\u{8fc7}\u{91cd}\u{590d}\u{53d1}\u{5e03}")));
+        assert!(!is_empty_auto_listing_batch_error(&anyhow!("listing batch id missing")));
+    }
+    #[test]
+    fn terminal_auto_listing_run_status_is_cleared() {
+        assert!(is_terminal_run_status("completed"));
+        assert!(is_terminal_run_status("failed"));
+        assert!(!is_terminal_run_status("preparing"));
+    }
+
+
+
+
+    #[test]
     fn restart_recovers_checkpoint_before_reserving() {
         let mut state = input(at(28, 9, 0));
         state.checkpoint_run_id = Some("run-checkpoint".into());
@@ -1421,3 +1575,4 @@ mod tests {
         );
     }
 }
+

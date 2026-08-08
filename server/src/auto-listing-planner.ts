@@ -1,7 +1,9 @@
-export interface PlannerQuota {
+﻿export interface PlannerQuota {
   createRemaining: number;
   totalRemaining: number;
 }
+
+export const DEFAULT_AUTO_LISTING_DAILY_TARGET = 100;
 
 export interface AllocationShop {
   externalShopId: string;
@@ -39,11 +41,18 @@ export interface AutoListingPlanValidationInput {
   externalShopIds: string[];
 }
 
-export function calculateSafeCreateCount(quota: PlannerQuota, availableAssets: number) {
-  if (quota.createRemaining < 3 || quota.totalRemaining <= 0 || availableAssets <= 0) {
+export function calculateSafeCreateCount(
+  quota: PlannerQuota,
+  availableAssets: number,
+  safetyReservePercent = 0,
+) {
+  if (quota.createRemaining <= 0 || quota.totalRemaining <= 0 || availableAssets <= 0) {
     return 0;
   }
-  const reserve = Math.max(2, Math.ceil(quota.createRemaining * 0.05));
+  const reserve = Math.min(
+    quota.createRemaining,
+    Math.max(0, Math.ceil(quota.createRemaining * Math.max(0, safetyReservePercent))),
+  );
   return Math.max(0, Math.min(
     quota.createRemaining - reserve,
     quota.totalRemaining,
@@ -53,14 +62,53 @@ export function calculateSafeCreateCount(quota: PlannerQuota, availableAssets: n
 
 export function calculateRemainingShopCapacity(
   quota: PlannerQuota,
+  dailyTarget: number,
+  completedToday: number,
   outstandingAssignments: number,
   reservationWindow: number,
+  safetyReservePercent = 0,
 ) {
+  const dailyRemaining = Math.max(
+    0,
+    Math.floor(dailyTarget) - Math.max(0, Math.floor(completedToday)) - Math.max(0, Math.floor(outstandingAssignments)),
+  );
   return Math.max(
     0,
-    calculateSafeCreateCount(quota, reservationWindow) - Math.max(0, outstandingAssignments),
+    Math.min(
+      dailyRemaining,
+      calculateSafeCreateCount(quota, reservationWindow, safetyReservePercent),
+    ),
   );
 }
+
+export function calculateAvailableReservationSlots(
+  shops: AllocationShop[],
+  perShopWindow: number,
+) {
+  const window = Math.max(0, Math.floor(perShopWindow));
+  return shops.reduce((total, shop) => {
+    const capacity = Math.max(0, Math.floor(shop.capacity));
+    const outstanding = Math.max(0, Math.floor(shop.outstanding ?? 0));
+    return total + Math.min(capacity, Math.max(0, window - outstanding));
+  }, 0);
+}
+
+export function calculateReservationCapacityByShop(
+  shops: AllocationShop[],
+  perShopWindow: number,
+) {
+  const window = Math.max(0, Math.floor(perShopWindow));
+  return shops.map((shop) => {
+    const capacity = Math.max(0, Math.floor(shop.capacity));
+    const outstanding = Math.max(0, Math.floor(shop.outstanding ?? 0));
+    return {
+      externalShopId: shop.externalShopId,
+      capacity: Math.min(capacity, Math.max(0, window - outstanding)),
+      outstanding,
+    };
+  });
+}
+
 
 export function allocateRoundRobin(shops: AllocationShop[], assetIds: string[]): AssetAllocation[] {
   if (new Set(assetIds).size !== assetIds.length) {
@@ -88,10 +136,46 @@ export function allocateRoundRobin(shops: AllocationShop[], assetIds: string[]):
   return allocations;
 }
 
+export function shouldReleaseFailedAssignment(status: ReleasableAssignmentStatus, retryCount: number) {
+  return status === "failed" && Number.isInteger(retryCount) && retryCount >= 3;
+}
+
 export function canReleaseAssignment(assignment: ReleasableAssignment) {
   return assignment.status === "reserved"
     && !assignment.batchId
     && !assignment.hasGeneratedWork;
+}
+
+export type AutoListingLaunchShop = {
+  externalShopId: string;
+  shopName: string;
+};
+
+export type AutoListingLaunchQuota = {
+  dailyCreateRemaining: number;
+  totalRemaining: number;
+};
+
+export type AutoListingLaunchIssue = {
+  externalShopId: string;
+  shopName: string;
+  reason: "quota_missing" | "quota_invalid";
+};
+
+export function validateAutoListingLaunch(
+  shops: AutoListingLaunchShop[],
+  quotaByExternalShopId: Record<string, AutoListingLaunchQuota>,
+) {
+  const issues: AutoListingLaunchIssue[] = [];
+  for (const shop of shops) {
+    const quota = quotaByExternalShopId[shop.externalShopId];
+    if (!quota) {
+      issues.push({ externalShopId: shop.externalShopId, shopName: shop.shopName, reason: "quota_missing" });
+    } else if (quota.dailyCreateRemaining < 0 || quota.totalRemaining < 0) {
+      issues.push({ externalShopId: shop.externalShopId, shopName: shop.shopName, reason: "quota_invalid" });
+    }
+  }
+  return { ok: issues.length === 0, issues };
 }
 
 export function validateAutoListingPlan(
@@ -145,3 +229,7 @@ export function assertAssignmentBatchUpdate(currentBatchId: string | null, nextB
     throw new Error("Assignment batch cannot be cleared or replaced");
   }
 }
+
+
+
+

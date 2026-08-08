@@ -1,4 +1,4 @@
-﻿CREATE TABLE IF NOT EXISTS legacy_listing_upload_grants (
+CREATE TABLE IF NOT EXISTS legacy_listing_upload_grants (
   id UUID PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   object_key TEXT NOT NULL UNIQUE,

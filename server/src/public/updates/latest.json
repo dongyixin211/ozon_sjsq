@@ -1,11 +1,11 @@
 {
-  "version": "0.3.14",
-  "notes": "自动上架恢复与任务状态同步优化",
-  "pub_date": "2026-07-29T15:34:08.992Z",
+  "version": "0.3.36",
+  "notes": "自动上架店铺调度、额度检查和配置页优化",
+  "pub_date": "2026-08-08T06:22:01.599Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUdW02Tk5zSWZ0SUlRc2ZJN2NnUzNuTXBpRHE2aVpNOGZ5NlhyVHhpcWJPRTREKzhZUGdJUFdxUE5PQVA2NythaHJuaHY4RmdxQmNmeGlMckRsOTdhU2NtSXJPSzZ1aHdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MzM4OTk5CWZpbGU6T3pvbiBTSlNRXzAuMy4xNF94NjQtc2V0dXAuZXhlCjJoT2NIektEVFg2UHhFdEttYklyakZibG5GbEMzaS9GdWJNUldzQmYxZnFnUTVqZXV1VTJYc2ZKNkxnOEovR1FUZytXemI0OGFrSDZPNXJqM1NJekJRPT0K",
-      "url": "https://ghfjscfw.oss-cn-hangzhou.aliyuncs.com/releases/windows/0.3.14/Ozon%20SJSQ_0.3.14_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUdW02Tk5zSWZ0SUFjdGQ1RTQ5VUE5V3FjcDJMUi9pbkNFNmx0ZmgwVVVLV0VONGoyODNkOHNlMlRNSy91Rm9GaXd0UVZMUW5oOXExQytYTlIxc3NYaWp3NlhGYnAxdHdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2MTY5NzY4CWZpbGU6T3pvbiBTSlNRXzAuMy4zNl94NjQtc2V0dXAuZXhlCjI4MDlMeWJwWEc0cEc3a2E0T2lKeHV2OExlTDZjWVZlaWVlM3dUSTJRQlFNMXVDS285RldMeFlmZGZmdk1OSXRHRjh4UGxMQ2FBaTl6Y3BQQitvSUFBPT0K",
+      "url": "https://ghfjscfw.oss-cn-hangzhou.aliyuncs.com/releases/windows/0.3.36/Ozon%20SJSQ_0.3.36_x64-setup.exe"
     }
   }
 }

@@ -1,15 +1,19 @@
 use crate::core::batch::RuntimeShopConfig;
 use crate::core::jobs::JobRegistry;
 use crate::core::models::{
-    JobStatus, ListingMaintenanceActionConfig, ListingMaintenanceRequest, OzonProductRow,
+    JobKind, JobStatus, ListingMaintenanceActionConfig, ListingMaintenanceRequest, OzonProductRow,
 };
 use crate::core::ozon::{extract_items, OzonSellerClient};
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 use tokio::time::{sleep, Duration};
 
+pub const LISTING_MAINTENANCE_INTERVAL_MINUTES: i64 = 120;
 const BATCH_SIZE: usize = 100;
+
+static SCHEDULED_SHOPS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 pub async fn run_listing_maintenance(
     jobs: JobRegistry,
@@ -17,10 +21,53 @@ pub async fn run_listing_maintenance(
     request: ListingMaintenanceRequest,
     shop: RuntimeShopConfig,
 ) {
-    if let Err(error) = listing_maintenance_inner(&jobs, &job_id, request, shop).await {
-        jobs.log(&job_id, "error", &format!("{error:#}"));
-        jobs.fail(&job_id, format!("{error:#}"));
+    let result = listing_maintenance_inner(&jobs, &job_id, request.clone(), shop.clone()).await;
+    if jobs.is_cancelled(&job_id) {
+        return;
     }
+    match result {
+        Ok(()) => {
+            jobs.complete_with_output(&job_id, None);
+            jobs.log(&job_id, "info", "本轮店铺自动运维已完成，任务已结束；下一轮将在 2 小时后创建新的任务。
+");
+        }
+        Err(error) => {
+            jobs.log(&job_id, "error", &format!("店铺自动运维失败：{error:#}"));
+            jobs.fail(&job_id, format!("{error:#}"));
+        }
+    }
+    schedule_next_cycle(jobs, request, shop);
+}
+
+fn schedule_next_cycle(
+    jobs: JobRegistry,
+    request: ListingMaintenanceRequest,
+    shop: RuntimeShopConfig,
+) {
+    let shop_id = shop.shop.id.clone();
+    let registry = SCHEDULED_SHOPS.get_or_init(|| Mutex::new(HashSet::new()));
+    let should_schedule = registry
+        .lock()
+        .map(|mut shops| shops.insert(shop_id.clone()))
+        .unwrap_or(false);
+    if !should_schedule {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        sleep(Duration::from_secs((LISTING_MAINTENANCE_INTERVAL_MINUTES * 60) as u64)).await;
+        if let Some(registry) = SCHEDULED_SHOPS.get() {
+            if let Ok(mut shops) = registry.lock() {
+                shops.remove(&shop_id);
+            }
+        }
+        let next_job = jobs.create_job(
+            JobKind::ListingMaintenance,
+            "店铺自动运维".to_string(),
+            Some(shop_id),
+        );
+        run_listing_maintenance(jobs, next_job.id, request, shop).await;
+    });
 }
 
 async fn listing_maintenance_inner(
@@ -29,103 +76,62 @@ async fn listing_maintenance_inner(
     request: ListingMaintenanceRequest,
     shop: RuntimeShopConfig,
 ) -> Result<()> {
-    let interval_minutes = request.interval_minutes.clamp(1, 1440) as u64;
     let client = OzonSellerClient::new(shop.shop.client_id.clone(), shop.ozon_api_key.clone())?;
-    let mut cycle = 1usize;
     let mut total_success = 0usize;
     let mut total_failed = 0usize;
 
     jobs.update(job_id, JobStatus::Running, 1, None);
+    jobs.log(job_id, "info", &format!("{} 店铺自动运维开始本轮检查。", shop.shop.name));
+    if jobs.is_cancelled(job_id) {
+        return Ok(());
+    }
+
+    jobs.update(job_id, JobStatus::Running, 10, None);
+    if request.auto_update_stock {
+        match update_zero_stock_products(jobs, job_id, &client, &shop, &request).await {
+            Ok(count) => total_success += count,
+            Err(error) => {
+                total_failed += 1;
+                jobs.log(job_id, "error", &format!("自动补库存失败：{error:#}"));
+            }
+        }
+    }
+    if jobs.is_cancelled(job_id) {
+        return Ok(());
+    }
+
+    if request.auto_generate_barcode {
+        match generate_missing_barcodes(jobs, job_id, &client, &shop.shop.name).await {
+            Ok(count) => total_success += count,
+            Err(error) => {
+                total_failed += 1;
+                jobs.log(job_id, "error", &format!("自动生成条码失败：{error:#}"));
+            }
+        }
+    }
+    if jobs.is_cancelled(job_id) {
+        return Ok(());
+    }
+
+    if request.auto_add_to_action {
+        match add_action_candidates_by_category(jobs, job_id, &client, &shop.shop.name, &request).await {
+            Ok(count) => total_success += count,
+            Err(error) => {
+                total_failed += 1;
+                jobs.log(job_id, "error", &format!("自动参加活动失败：{error:#}"));
+            }
+        }
+    }
+
+    jobs.update_counts(job_id, total_success, total_failed);
+    jobs.update(job_id, JobStatus::Running, 95, None);
     jobs.log(
         job_id,
         "info",
-        &format!(
-            "{} 店铺自动运维已启动，每 {} 分钟检查一次。",
-            shop.shop.name, interval_minutes
-        ),
+        &format!("本轮完成：处理 {} 个，失败 {} 个。", total_success, total_failed),
     );
-
-    loop {
-        if jobs.is_cancelled(job_id) {
-            jobs.log(job_id, "warn", "店铺自动运维已取消");
-            return Ok(());
-        }
-
-        jobs.update(job_id, JobStatus::Running, 10, None);
-        jobs.log(job_id, "info", &format!("开始第 {cycle} 轮店铺自动运维"));
-        let mut cycle_success = 0usize;
-        let mut cycle_failed = 0usize;
-
-        if request.auto_update_stock {
-            match update_zero_stock_products(jobs, job_id, &client, &shop, &request).await {
-                Ok(count) => cycle_success += count,
-                Err(error) => {
-                    cycle_failed += 1;
-                    jobs.log(job_id, "error", &format!("自动补库存失败：{error:#}"));
-                }
-            }
-        }
-
-        if jobs.is_cancelled(job_id) {
-            jobs.log(job_id, "warn", "店铺自动运维已取消");
-            return Ok(());
-        }
-
-        if request.auto_generate_barcode {
-            match generate_missing_barcodes(jobs, job_id, &client, &shop.shop.name).await {
-                Ok(count) => cycle_success += count,
-                Err(error) => {
-                    cycle_failed += 1;
-                    jobs.log(job_id, "error", &format!("自动生成条码失败：{error:#}"));
-                }
-            }
-        }
-
-        if jobs.is_cancelled(job_id) {
-            jobs.log(job_id, "warn", "店铺自动运维已取消");
-            return Ok(());
-        }
-
-        if request.auto_add_to_action {
-            match add_action_candidates_by_category(
-                jobs,
-                job_id,
-                &client,
-                &shop.shop.name,
-                &request,
-            )
-            .await
-            {
-                Ok(count) => cycle_success += count,
-                Err(error) => {
-                    cycle_failed += 1;
-                    jobs.log(job_id, "error", &format!("自动参加活动失败：{error:#}"));
-                }
-            }
-        }
-
-        total_success += cycle_success;
-        total_failed += cycle_failed;
-        jobs.update(job_id, JobStatus::Running, 95, None);
-        jobs.log(
-            job_id,
-            "info",
-            &format!(
-                "第 {cycle} 轮完成：处理 {} 个，失败 {} 个；累计处理 {} 个，累计失败 {} 个。",
-                cycle_success, cycle_failed, total_success, total_failed
-            ),
-        );
-        jobs.log(
-            job_id,
-            "info",
-            &format!("{interval_minutes} 分钟后执行下一轮。没有可更新商品时不会调用更新接口。"),
-        );
-
-        wait_next_cycle(jobs, job_id, interval_minutes).await;
-        cycle += 1;
-    }
+    Ok(())
 }
-
 async fn update_zero_stock_products(
     jobs: &JobRegistry,
     job_id: &str,
@@ -587,18 +593,6 @@ fn discount_percent(base_price: Option<&str>, action_price: &str) -> Option<i64>
     Some((((base - action) / base * 100.0).round() as i64).clamp(1, 99))
 }
 
-async fn wait_next_cycle(jobs: &JobRegistry, job_id: &str, interval_minutes: u64) {
-    let mut remaining = interval_minutes.saturating_mul(60);
-    while remaining > 0 {
-        if jobs.is_cancelled(job_id) {
-            return;
-        }
-        let step = remaining.min(10);
-        sleep(Duration::from_secs(step)).await;
-        remaining -= step;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,5 +664,15 @@ mod tests {
         assert_eq!(payload["action_price"], "800");
         assert_eq!(payload["stock"], 50);
         assert_eq!(payload["discount"], 20);
+    }
+}
+
+#[cfg(test)]
+mod schedule_contract_tests {
+    use super::LISTING_MAINTENANCE_INTERVAL_MINUTES;
+
+    #[test]
+    fn maintenance_schedule_runs_every_two_hours() {
+        assert_eq!(LISTING_MAINTENANCE_INTERVAL_MINUTES, 120);
     }
 }

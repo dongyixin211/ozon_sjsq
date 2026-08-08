@@ -22,7 +22,7 @@ type InventoryMode = "products" | "actions";
 type CategoryUpdateMode = "stock" | "price" | "both";
 type OperationFeedback = { tone: "success" | "error" | "running"; message: string };
 const PRODUCT_TEMPLATE_KIND = "product_import";
-const LISTING_MAINTENANCE_INTERVAL_MINUTES = 30;
+const LISTING_MAINTENANCE_INTERVAL_MINUTES = 120;
 const TASK_TABS: Array<{ key: TabKey; label: string; description: string; primaryAction: string }> = [
   { key: "upload", label: "上架商品", description: "用 Excel、图片目录和商品模板创建 Ozon 上架任务。", primaryAction: "去上架" },
   { key: "update", label: "更新商品", description: "按货号更新已上架商品的标题、图片、视频和富内容。", primaryAction: "去更新" },
@@ -342,7 +342,7 @@ export function OzonPage({ shops, jobs = [], settings, homeRequest = 0, onChange
   const [baiduCookie, setBaiduCookie] = useState(settings.baiduCookie);
   const [baiduSearchDir, setBaiduSearchDir] = useState(savedOrderDraft.baiduSearchDir ?? "/");
   const [baiduRecursive, setBaiduRecursive] = useState(savedOrderDraft.baiduRecursive ?? true);
-  const [downloadMaterials, setDownloadMaterials] = useState(savedOrderDraft.downloadMaterials ?? true);
+  const [downloadMaterials, setDownloadMaterials] = useState(savedOrderDraft.downloadMaterials ?? false);
   const [orderDateFrom, setOrderDateFrom] = useState(savedOrderDraft.orderDateFrom || dateInputValue(7));
   const [orderDateTo, setOrderDateTo] = useState(savedOrderDraft.orderDateTo || dateInputValue(0));
   const [orderStatus, setOrderStatus] = useState(savedOrderDraft.orderStatus || "");
@@ -1104,7 +1104,7 @@ export function OzonPage({ shops, jobs = [], settings, homeRequest = 0, onChange
       }
       const job = await api.startListingMaintenance(request);
       setResult(JSON.stringify(job, null, 2));
-      setFriendlyMessage("店铺定时运维已启动：每 30 分钟执行一次运维任务。");
+      setFriendlyMessage("店铺定时运维已启动：每 2 小时执行一轮运维，完成后任务自动结束。");
       await onChanged();
     });
   };
@@ -2478,7 +2478,7 @@ function ShopMaintenanceHomePanel(props: {
       <div className="panel-header">
         <div>
           <h2>定时运维</h2>
-          <p className="muted">启动后每 30 分钟执行一次上架后运维任务；批量执行会按每个已启用店铺保存的配置启动。</p>
+          <p className="muted">启动后每 2 小时执行一轮上架后运维任务，完成后自动结束；批量执行会按每个已启用店铺保存的配置启动。</p>
         </div>
         <div className="toolbar">
           <button className="primary-button" disabled={!props.shop || running || !props.canStart} onClick={props.onStart}>启动定时运维</button>
@@ -2939,7 +2939,7 @@ function ListingMaintenancePanel(props: {
       <div className="panel-header">
         <div>
           <h2>上架后自动运维</h2>
-          <p className="muted">自动上架只提交商品到 Ozon；库存、条码和活动在这里按店铺配置，每 30 分钟独立检查并处理。</p>
+          <p className="muted">自动上架只提交商品到 Ozon；库存、条码和活动在这里按店铺配置，每 2 小时独立检查并处理，单轮完成后自动结束。</p>
         </div>
         <div className="toolbar">
           <button className="secondary-button" disabled={!props.shop} onClick={props.saveConfig}>保存配置</button>
@@ -2957,13 +2957,13 @@ function ListingMaintenancePanel(props: {
         </label>
         <label className="check-card">
           <input type="checkbox" checked={props.autoAction} onChange={(event) => props.setAutoAction(event.target.checked)} />
-          自动参加活动
+          按类目规则管控活动
         </label>
       </div>
       <div className="form-grid compact-form-grid">
         <div className="field">
           <label>执行间隔（分钟）</label>
-          <input type="number" min={30} max={30} value={LISTING_MAINTENANCE_INTERVAL_MINUTES} disabled onChange={(event) => props.setIntervalMinutes(Number(event.target.value))} />
+          <input type="number" min={120} max={120} value={LISTING_MAINTENANCE_INTERVAL_MINUTES} disabled onChange={(event) => props.setIntervalMinutes(Number(event.target.value))} />
         </div>
         <div className="field">
           <label>补库存仓库</label>
@@ -2992,7 +2992,7 @@ function ListingMaintenancePanel(props: {
           <span className="step-dot">A</span>
           <div>
             <h3>类目活动规则</h3>
-            <p className="muted">参加活动时按类目匹配商品，不同类目可以配置不同活动和价格。</p>
+            <p className="muted">开启活动管控后，仅保留本规则中的活动商品；Ozon 自动加入的其他活动会自动移除商品。</p>
           </div>
         </div>
         <div className="form-grid compact-form-grid">
@@ -3176,7 +3176,7 @@ function FollowSyncPanel(props: {
           </label>
           <label className="check-card">
             <input type="checkbox" checked={props.autoAddToAction} onChange={(event) => props.setAutoAddToAction(event.target.checked)} />
-            自动给所有商品添加活动
+            按类目规则管控活动
           </label>
         </div>
         <div className="form-grid compact-form-grid">

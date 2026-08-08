@@ -58,3 +58,19 @@ GET /gallery/assets?hideUsed=true
 ## 注意
 
 如果提示“店铺还没有同步到云端”，先在云服务页点击“同步店铺”。
+
+## 旧批量上架素材清理
+
+旧版批量上架直传素材默认保留 7 天。清理脚本默认只预览，不删除对象：
+
+```bash
+npm run listing:uploads:cleanup -- --status
+```
+
+确认输出后再执行实际清理：
+
+```bash
+npm run listing:uploads:cleanup -- --delete
+```
+
+脚本只处理已完成上传且超过 7 天的 `legacy-listing/<用户>/` 对象，并保护存在未完成授权的对象；OSS 删除成功后才删除数据库记录，所有结果写入清理审计表。

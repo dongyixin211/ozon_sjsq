@@ -15,6 +15,7 @@
     "gallery:thumbs": "tsx scripts/backfill-gallery-thumbnails.ts",
     "gallery:featured": "tsx scripts/refresh-featured-gallery.ts",
     "listing:quota:audit": "tsx scripts/audit-listing-quota.ts",
+    "listing:uploads:cleanup": "tsx scripts/cleanup-legacy-listing-uploads.ts",
     "listing:auto:smoke": "tsx scripts/auto-listing-consistency-smoke.ts",
     "storage:migrate": "tsx scripts/migrate-gallery-to-object-storage.ts",
     "storage:sync-local": "tsx scripts/sync-local-uploads-to-object-storage.ts",
@@ -50,3 +51,6 @@
     "typescript": "^5.6.3"
   }
 }
+
+
+

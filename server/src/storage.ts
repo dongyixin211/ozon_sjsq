@@ -1,6 +1,6 @@
-import path from "node:path";
+﻿import path from "node:path";
 import fs from "node:fs/promises";
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import sharp from "sharp";
 import { config } from "./config.js";
@@ -150,9 +150,23 @@ export async function uploadObject(objectKey: string, buffer: Buffer, contentTyp
   }));
 }
 
+export async function deleteObject(objectKey: string) {
+  if (storageProvider === "local") {
+    const localPath = path.join(config.STORAGE_LOCAL_DIR, objectKey);
+    await fs.rm(localPath, { force: true });
+    return;
+  }
+  if (!s3) {
+    throw new Error("Storage client is not initialized");
+  }
+  await s3.send(new DeleteObjectCommand({
+    Bucket: config.STORAGE_BUCKET,
+    Key: objectKey,
+  }));
+}
 export async function createDirectUploadUrl(objectKey: string, contentType: string) {
   if (!s3 || storageProvider === "local") {
-    throw new Error("当前存储配置不支持客户端直传");
+    throw new Error("褰撳墠瀛樺偍閰嶇疆涓嶆敮鎸佸鎴风鐩翠紶");
   }
   const expiresIn = 15 * 60;
   const uploadUrl = await getSignedUrl(
@@ -247,7 +261,7 @@ export async function readObjectBuffer(objectKey: string): Promise<Buffer> {
     throw error;
   }
   if (!response.Body) {
-    throw new Error("图片文件读取失败");
+    throw new Error("鍥剧墖鏂囦欢璇诲彇澶辫触");
   }
   return Buffer.from(await response.Body.transformToByteArray());
 }
@@ -266,7 +280,7 @@ export function publicUrlForObjectKey(objectKey: string) {
 function normalizeSku(value: string): string {
   const sku = value.trim().replace(/\s+/g, "-").replace(/[\\/:*?"<>|#%{}]/g, "-");
   if (!sku) {
-    throw new Error("图片货号不能为空");
+    throw new Error("鍥剧墖璐у彿涓嶈兘涓虹┖");
   }
   return sku.slice(0, 120);
 }
@@ -376,3 +390,5 @@ function resolveForcePathStyle() {
   }
   return true;
 }
+
+

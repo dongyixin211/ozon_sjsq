@@ -5,10 +5,28 @@ import {
   assertManualAssetsAvailableForListing,
   buildExecutionSnapshots,
   finalizeEmptyAutoListingRun,
+  filterOccupiedAutoListingSelections,
   insertAutoListingRun,
   insertReservedAssignments,
   selectAutoListingCandidateIds,
 } from "./auto-listing-reservation.js";
+
+test("automatic listing filters source assets occupied by the same shop", () => {
+  const result = filterOccupiedAutoListingSelections(
+    [
+      { sourceAssetId: "asset-used", externalShopId: "shop-a" },
+      { sourceAssetId: "asset-new", externalShopId: "shop-a" },
+      { sourceAssetId: "asset-used", externalShopId: "shop-b" },
+    ],
+    new Set(["asset-used:shop-a"]),
+  );
+
+  assert.deepEqual(result.occupied, [{ sourceAssetId: "asset-used", externalShopId: "shop-a" }]);
+  assert.deepEqual(result.available, [
+    { sourceAssetId: "asset-new", externalShopId: "shop-a" },
+    { sourceAssetId: "asset-used", externalShopId: "shop-b" },
+  ]);
+});
 
 test("automatic listing candidates exclude previous mockup result assets", async () => {
   let queryText = "";

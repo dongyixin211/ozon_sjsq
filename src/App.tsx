@@ -19,6 +19,7 @@ import { CLOUD_AUTH_CHANGED_EVENT, cloudAccountId, createCloudClient, getCloudTo
 import {
   checkLocalAssistant,
   checkLocalAssistantWithGracePeriod,
+  preserveAssistantDuringTransientFailure,
   LOCAL_ASSISTANT_PROTOCOL_VERSION,
   openLocalAssistant,
   type LocalAssistantStatus,
@@ -62,6 +63,7 @@ export function App() {
   const [ozonHomeRequest, setOzonHomeRequest] = useState(0);
   const assistantProbeFailures = useRef(0);
   const assistantConnectionError = useRef("");
+  const lastHealthyAssistant = useRef<LocalAssistantStatus>(ASSISTANT_CHECKING_STATUS);
   const schedulerRegistrationKey = useRef("");
 
   const refresh = async () => {
@@ -103,6 +105,7 @@ export function App() {
     refresh().catch((error) => {
       setMessage(readableError(error));
     });
+    refreshCloudAiSettings().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -137,11 +140,18 @@ export function App() {
         }
 
         assistantProbeFailures.current += 1;
-        if (assistantProbeFailures.current >= 3) {
-          setAssistant(status);
+        const displayStatus = preserveAssistantDuringTransientFailure(
+          lastHealthyAssistant.current,
+          status,
+          assistantProbeFailures.current,
+        );
+        if (assistantProbeFailures.current >= 5) {
+          setAssistant(displayStatus);
           const errorMessage = status.error || "本地助手未连接";
           assistantConnectionError.current = errorMessage;
           setMessage(errorMessage);
+        } else {
+          setAssistant(displayStatus);
         }
         scheduleProbe(2_000);
       } catch {

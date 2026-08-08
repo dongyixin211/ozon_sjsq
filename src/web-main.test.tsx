@@ -11,6 +11,11 @@ const assistantStatus = vi.hoisted(() => ({
   },
 }));
 
+const cloudAuth = vi.hoisted(() => ({
+  token: null as string | null,
+  getAiSettings: vi.fn(),
+}));
+
 vi.mock("./lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/api")>();
   return {
@@ -31,8 +36,8 @@ vi.mock("./lib/api", async (importOriginal) => {
 vi.mock("./lib/cloudApi", () => ({
   CLOUD_AUTH_CHANGED_EVENT: "cloud-auth-changed",
   cloudAccountId: vi.fn(() => ""),
-  createCloudClient: vi.fn(() => ({ getAiSettings: vi.fn() })),
-  getCloudToken: vi.fn(() => null),
+  createCloudClient: vi.fn(() => ({ getAiSettings: cloudAuth.getAiSettings })),
+  getCloudToken: vi.fn(() => cloudAuth.token),
 }));
 
 vi.mock("./lib/localAssistant", () => ({
@@ -61,6 +66,8 @@ vi.mock("./features/cloud/LicensePage", () => ({ LicensePage: () => <div>License
 
 afterEach(() => {
   assistantStatus.value = { connected: true, compatible: true, state: "connected", error: undefined };
+  cloudAuth.token = null;
+  cloudAuth.getAiSettings.mockReset();
   document.body.innerHTML = "";
   vi.clearAllMocks();
   vi.resetModules();
@@ -81,6 +88,16 @@ describe("web entry", () => {
       "订单",
       "任务/设置",
     ]);
+  });
+
+  it("loads administrator AI settings when an authenticated user opens the workspace", async () => {
+    cloudAuth.token = "valid-cloud-token";
+    cloudAuth.getAiSettings.mockResolvedValue({ ok: true, settings: {} });
+    document.body.innerHTML = '<div id="root"></div>';
+
+    await import("./web-main");
+
+    await waitFor(() => expect(cloudAuth.getAiSettings).toHaveBeenCalled());
   });
 
   it("keeps the workspace navigation visible while the local assistant is unavailable", async () => {

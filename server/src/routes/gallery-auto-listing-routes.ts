@@ -1,13 +1,17 @@
-import type { FastifyInstance } from "fastify";
+﻿import type { FastifyInstance } from "fastify";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { requireAuth, requireMembership } from "../auth.js";
 import {
   allocateRoundRobin,
+  DEFAULT_AUTO_LISTING_DAILY_TARGET,
   assertAssignmentBatchUpdate,
   assertAssignmentStatusTransition,
+  calculateAvailableReservationSlots,
   calculateRemainingShopCapacity,
+  shouldReleaseFailedAssignment,
   canReleaseAssignment,
+  validateAutoListingLaunch,
   validateAutoListingPlan,
 } from "../auto-listing-planner.js";
 import { pool, withTransaction } from "../db.js";
@@ -254,27 +258,49 @@ async function reserveBatch(userId: string, body: z.infer<typeof reserveBodySche
 
     const shopConfigs = shopConfigSchema.array().parse(plan.shop_configs);
     await assertEnabledPlanShopsOwned(client, userId, shopConfigs.map((shop) => shop.externalShopId));
+    const launchCheck = validateAutoListingLaunch(shopConfigs, body.quotaByExternalShopId);
+    if (!launchCheck.ok) {
+      const firstIssue = launchCheck.issues[0];
+      throw new AppError(
+        409,
+        "AUTO_LISTING_PREFLIGHT_FAILED",
+        firstIssue.reason === "quota_missing"
+          ? "Shop quota is missing: " + firstIssue.shopName
+          : "Shop quota is invalid: " + firstIssue.shopName,
+      );
+    }
     const outstandingRows = (await client.query(
       `SELECT external_shop_id AS "externalShopId", count(*)::int AS count
        FROM gallery_auto_listing_assignments
-       WHERE user_id=$1 AND plan_id=$2 AND released_at IS NULL AND status NOT IN ('completed','released')
+       WHERE user_id=$1 AND plan_id=$2 AND released_at IS NULL AND status IN ('reserved','preparing','ready','submitting','paused')
        GROUP BY external_shop_id`,
       [userId, body.planId],
     )).rows;
     const outstandingByShop = new Map(outstandingRows.map((row) => [String(row.externalShopId), Number(row.count)]));
-    const targetOutstanding = Number(plan.batch_size) + Number(plan.buffer_size);
-    const availableSlots = Math.max(0, targetOutstanding - [...outstandingByShop.values()].reduce((sum, count) => sum + count, 0));
-    const shops = shopConfigs.flatMap((shop) => {
+    const completedRows = (await client.query(
+      `SELECT external_shop_id AS "externalShopId", count(*)::int AS count
+       FROM gallery_auto_listing_assignments
+       WHERE user_id=$1 AND plan_id=$2 AND status='completed' AND updated_at::date=CURRENT_DATE
+       GROUP BY external_shop_id`,
+      [userId, body.planId],
+    )).rows;
+    const completedTodayByShop = new Map(completedRows.map((row) => [String(row.externalShopId), Number(row.count)]));
+    const targetOutstandingPerShop = Number(plan.batch_size) + Number(plan.buffer_size);
+    const shops = shopConfigs.map((shop) => {
       const quota = body.quotaByExternalShopId[shop.externalShopId];
-      if (!quota) return [];
+      if (!quota) {
+        throw new AppError(409, "AUTO_LISTING_SHOP_QUOTA_MISSING", "Shop quota is missing: " + shop.shopName);
+      }
       const capacity = calculateRemainingShopCapacity(
         { createRemaining: quota.dailyCreateRemaining, totalRemaining: quota.totalRemaining },
+        DEFAULT_AUTO_LISTING_DAILY_TARGET,
+        completedTodayByShop.get(shop.externalShopId) ?? 0,
         outstandingByShop.get(shop.externalShopId) ?? 0,
-        targetOutstanding,
+        targetOutstandingPerShop,
       );
-      return [{ externalShopId: shop.externalShopId, capacity, outstanding: outstandingByShop.get(shop.externalShopId) ?? 0 }];
+      return { externalShopId: shop.externalShopId, capacity, outstanding: outstandingByShop.get(shop.externalShopId) ?? 0 };
     });
-    const reservationLimit = Math.min(availableSlots, shops.reduce((sum, shop) => sum + shop.capacity, 0));
+    const reservationLimit = calculateAvailableReservationSlots(shops, targetOutstandingPerShop);
     const candidates = reservationLimit
       ? await selectAutoListingCandidateIds(client, {
         userId,
@@ -334,10 +360,13 @@ async function updateAssignments(userId: string, updates: Array<z.infer<typeof a
         `UPDATE gallery_auto_listing_assignments SET status=$3,
            batch_id=CASE WHEN $4::boolean THEN $5::uuid ELSE batch_id END,
            retry_count=COALESCE($6,retry_count),
-           last_error=CASE WHEN $7::boolean THEN $8 ELSE last_error END, updated_at=now()
+           last_error=CASE WHEN $7::boolean THEN $8 ELSE last_error END,
+           released_at=CASE WHEN $9::boolean THEN COALESCE(released_at, now()) ELSE released_at END,
+           updated_at=now()
          WHERE id=$1 AND user_id=$2 RETURNING *`,
         [update.assignmentId, userId, update.status, update.batchId !== undefined, update.batchId ?? null,
-          update.retryCount ?? null, update.lastError !== undefined, update.lastError ?? null],
+          update.retryCount ?? null, update.lastError !== undefined, update.lastError ?? null,
+          shouldReleaseFailedAssignment(update.status, update.retryCount ?? Number(current.retryCount ?? 0))],
       );
       assignments.push(mapAssignmentRow(result.rows[0]));
       runIds.add(String(current.runId));
@@ -481,3 +510,7 @@ function toDateString(value: unknown) { return value instanceof Date ? value.toI
 function isPgError(error: unknown, code: string) {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
 }
+
+
+
+

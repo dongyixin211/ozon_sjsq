@@ -1,4 +1,4 @@
-use crate::core::{cloud_bridge, commands, device, models, product_catalog};
+﻿use crate::core::{cloud_bridge, commands, device, models, product_catalog};
 use crate::AppState;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -20,7 +20,7 @@ pub fn start(app: tauri::AppHandle) {
         let listener = match TcpListener::bind(("127.0.0.1", LOCAL_ASSISTANT_PORT)) {
             Ok(listener) => listener,
             Err(error) => {
-                eprintln!("本地助手启动失败: {error}");
+                eprintln!("鏈湴鍔╂墜鍚姩澶辫触: {error}");
                 return;
             }
         };
@@ -82,7 +82,7 @@ fn handle_stream(mut stream: TcpStream, app: tauri::AppHandle) -> std::io::Resul
             .unwrap_or_default();
         let result = catch_unwind(AssertUnwindSafe(|| {
             serde_json::from_str::<AssistantCommandRequest>(body)
-                .map_err(|error| format!("命令请求格式不正确：{error}"))
+                .map_err(|error| format!("鍛戒护璇锋眰鏍煎紡涓嶆纭細{error}"))
                 .and_then(|input| handle_command(app, input))
         }))
         .unwrap_or_else(|payload| {
@@ -321,6 +321,13 @@ fn handle_command(app: tauri::AppHandle, input: AssistantCommandRequest) -> Resu
         "start_auto_listing" => {
             to_value(commands::start_auto_listing(state, arg(&args, "request")?))
         }
+        "resume_saved_auto_listing" => to_value(tauri::async_runtime::block_on(
+            app.state::<crate::core::auto_listing_scheduler::AutoListingScheduler>().resume_saved_session(
+                app.clone(),
+                arg::<String>(&args, "accountId")?.as_str(),
+                optional_arg::<String>(&args, "planId")?.as_deref(),
+            ),
+        )),
         "scheduler_status" => to_value(commands::scheduler_status(
             app.state(),
             arg(&args, "request")?,

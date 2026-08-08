@@ -1,0 +1,11 @@
+﻿[Unit]
+Description=Clean expired Ozon SJSQ legacy listing uploads
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=ozoncloud
+WorkingDirectory=/opt/ozon-sjsq-cloud/server
+Environment=NODE_ENV=production
+Environment=LEGACY_LISTING_UPLOAD_RETENTION_DAYS=1
+ExecStart=/usr/bin/npm run listing:uploads:cleanup -- --delete

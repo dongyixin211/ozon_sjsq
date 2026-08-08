@@ -74,7 +74,7 @@ impl CloudListingImageUploader {
             .await
             .with_context(|| format!("读取上传图片失败：{}", path.display()))?;
         let content_type = cloud_upload_content_type(filename);
-        let presign = self
+        let presign_response = self
             .client
             .post(format!("{}/legacy-listing/uploads/presign", self.base_url))
             .bearer_auth(&self.token)
@@ -85,10 +85,14 @@ impl CloudListingImageUploader {
                 "sizeBytes": bytes.len(),
             }))
             .send()
-            .await?
-            .error_for_status()?
-            .json::<LegacyPresignResponse>()
             .await?;
+        let presign = if presign_response.status().is_success() {
+            presign_response.json::<LegacyPresignResponse>().await?
+        } else {
+            let status = presign_response.status();
+            let body = presign_response.text().await.unwrap_or_default();
+            anyhow::bail!("{}", cloud_upload_error_message(status, &body));
+        };
         self.client
             .put(&presign.upload_url)
             .header(reqwest::header::CONTENT_TYPE, content_type)
@@ -110,6 +114,40 @@ impl CloudListingImageUploader {
     }
 }
 
+fn cloud_upload_error_message(status: reqwest::StatusCode, body: &str) -> String {
+    let parsed = serde_json::from_str::<Value>(body).ok();
+    let code = parsed
+        .as_ref()
+        .and_then(|value| value.get("code"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let message = parsed
+        .as_ref()
+        .and_then(|value| value.get("message"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if code == "GALLERY_STORAGE_LIMIT_EXCEEDED" {
+        return message
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "云图库容量不足：请先清理旧的批量上架图片或联系管理员扩容。".to_string());
+    }
+    if code == "AUTH_REQUIRED" || code == "AUTH_EXPIRED" {
+        return "云端登录已失效，请重新登录后再进行统一 OSS 上架。".to_string();
+    }
+    if code == "MEMBERSHIP_REQUIRED" {
+        return "当前账号未开通或会员已到期，请先兑换授权后再进行统一 OSS 上架。".to_string();
+    }
+    if status == reqwest::StatusCode::INSUFFICIENT_STORAGE {
+        return "\u{4e34}\u{65f6}\u{4e0a}\u{67b6}\u{56fe}\u{7247}\u{7a7a}\u{95f4}\u{4e0d}\u{8db3}\u{ff1a}\u{8bf7}\u{7b49}\u{5f85}\u{7cfb}\u{7edf}\u{6e05}\u{7406} 1 \u{5929}\u{524d}\u{7684}\u{4e34}\u{65f6}\u{56fe}\u{7247}\u{540e}\u{91cd}\u{8bd5}\u{ff0c}\u{6216}\u{8054}\u{7cfb}\u{7ba1}\u{7406}\u{5458}\u{6269}\u{5bb9}\u{3002}".to_string();
+    }
+    if status == reqwest::StatusCode::FORBIDDEN {
+        return "\u{4e91}\u{7aef}\u{62d2}\u{7edd}\u{4e86}\u{56fe}\u{7247}\u{4e0a}\u{4f20}\u{8bf7}\u{6c42}\u{ff0c}\u{8bf7}\u{68c0}\u{67e5}\u{8d26}\u{53f7}\u{6388}\u{6743}\u{548c}\u{4e91}\u{56fe}\u{5e93}\u{5bb9}\u{91cf}\u{ff1b}\u{4ecd}\u{65e0}\u{6cd5}\u{4f7f}\u{7528}\u{65f6}\u{8054}\u{7cfb}\u{7ba1}\u{7406}\u{5458}\u{3002}".to_string();
+    }
+    message
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| "\u{4e91}\u{7aef}\u{56fe}\u{7247}\u{4e0a}\u{4f20}\u{5931}\u{8d25}\u{ff0c}\u{8bf7}\u{67e5}\u{770b}\u{670d}\u{52a1}\u{7aef}\u{8fd4}\u{56de}\u{7684}\u{5177}\u{4f53}\u{539f}\u{56e0}\u{540e}\u{91cd}\u{8bd5}\u{3002}".to_string())
+}
 fn cloud_upload_content_type(filename: &str) -> &'static str {
     if filename.to_ascii_lowercase().ends_with(".png") {
         "image/png"
@@ -1307,6 +1345,24 @@ mod tests {
     fn cloud_uploader_requires_base_url_and_token() {
         assert!(CloudListingImageUploader::new("", "token").is_err());
         assert!(CloudListingImageUploader::new("https://api.example.com", " ").is_err());
+    }
+
+
+    #[test]
+    fn cloud_upload_error_explains_storage_quota_breakdown() {
+        let message = cloud_upload_error_message(
+            reqwest::StatusCode::FORBIDDEN,
+            r#"{"code":"GALLERY_STORAGE_LIMIT_EXCEEDED","message":"云图库容量不足：已使用 10.0 GB，本次需要 2.0 MB，上限 10.0 GB"}"#,
+        );
+        assert!(message.contains("已使用 10.0 GB"));
+        assert!(!message.contains("HTTP status client error"));
+    }
+    #[test]
+    fn cloud_upload_error_hides_raw_507_status() {
+        let message = cloud_upload_error_message(reqwest::StatusCode::INSUFFICIENT_STORAGE, "");
+        assert!(message.contains("\u{4e34}\u{65f6}\u{4e0a}\u{67b6}\u{56fe}\u{7247}\u{7a7a}\u{95f4}\u{4e0d}\u{8db3}"));
+        assert!(!message.contains("HTTP 507"));
+        assert!(!message.contains("HTTP status client error"));
     }
 
     #[test]

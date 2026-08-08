@@ -14,6 +14,8 @@ import {
   type ListingSetupPhase,
   type ShopListingConfig,
 } from "./listingSetupUtils";
+import { autoListingText, getAutoListingDisabledReason } from "./auto-listing/autoListingText";
+import { buildAutoListingSummary } from "./auto-listing/autoListingStats";
 
 interface Props {
   mode: "upload" | "pending" | "processing" | "uploaded" | "featured";
@@ -473,6 +475,18 @@ export function GalleryManager({ mode, client, shops, localShops = EMPTY_LOCAL_S
   );
   const selectedListingQuotaWarnings = useMemo(
     () => buildListingQuotaWarnings(listingQuotaSnapshots, selectedShopNameById),
+    [listingQuotaSnapshots, selectedShopNameById],
+  );
+  const autoListingSummary = useMemo(
+    () => buildAutoListingSummary(listingQuotaSnapshots.map((quota) => ({
+      externalShopId: quota.externalShopId,
+      shopName: selectedShopNameById.get(quota.externalShopId) ?? quota.externalShopId,
+      limit: quota.limit,
+      listedCount: quota.listedCount,
+      pendingCount: quota.pendingCount,
+      reservedCount: quota.reservedCount,
+      failedCount: 0,
+    }))),
     [listingQuotaSnapshots, selectedShopNameById],
   );
   const activePreparationTasks = useMemo(
@@ -939,7 +953,7 @@ export function GalleryManager({ mode, client, shops, localShops = EMPTY_LOCAL_S
     }, 30_000);
     return () => window.clearInterval(timer);
   }, [tab, processingBatchIdsKey, preparationTaskIdsKey]);
-
+
 
   useEffect(() => {
     if (
@@ -3124,7 +3138,7 @@ export function GalleryManager({ mode, client, shops, localShops = EMPTY_LOCAL_S
       return next;
     });
   };
-
+
 
   const autoSubmitPreparedBatch = async (batchId: string) => {
     const attempts = autoSubmitAttemptCountRef.current.get(batchId) ?? 0;
@@ -4493,12 +4507,17 @@ export function GalleryManager({ mode, client, shops, localShops = EMPTY_LOCAL_S
           </div>
 
           <div className="listing-summary-strip">
-            <span>已${selectedAssets.length} </span>
+            <span>{autoListingText.title}{"\u76ee\u6807"} {autoListingSummary.target}</span>
+            <span>{"\u5df2\u5b8c\u6210"} {autoListingSummary.completed}</span>
+            <span>{"\u5904\u7406\u4e2d"} {autoListingSummary.processing}</span>
+            <span>{"\u5931\u8d25"} {autoListingSummary.failed}</span>
+            <span>{"\u5269\u4f59"} {autoListingSummary.remaining}</span>
+            <span>{"\u5df2\u9009\u4e2d"} {selectedAssets.length} {"\u5f20"}</span>
             <span>已套${selectedListingReadyAssets.length} </span>
             {selectedBlockedListingCount > 0 ? <span className="warn-text">{selectedBlockedListingCount} 张会自动补套</span> : null}
             <span>当前商品：{selectedProductRuleText || "请选择商品类型和图片比例"}</span>
             {dailyListingStatsLoading ? <span>正在刷新今日额度</span> : null}
-            {dailyListingStatsError ? <span className="warn-text">额度查询失败，提交时服务器会最终校</span> : null}
+            {dailyListingStatsError ? <span className="warn-text">{"\u989d\u5ea6\u67e5\u8be2\u5931\u8d25\uff0c\u63d0\u4ea4\u65f6\u670d\u52a1\u5668\u4f1a\u6700\u7ec8\u6821\u9a8c"}</span> : null}
             {selectedListingQuotaWarnings.length > 0 ? <span className="warn-text">额度不足：{selectedListingQuotaWarnings.join("")}</span> : null}
           </div>
 
@@ -4623,10 +4642,10 @@ export function GalleryManager({ mode, client, shops, localShops = EMPTY_LOCAL_S
                         <div className={quota && quota.overBy > 0 ? "listing-quota-box warn" : "listing-quota-box"}>
                           <strong>{quota ? quota.remaining : config.dailyListingLimit}</strong>
                           <span>
-                            已上${quota?.listedCount ?? 0}
-                            {quota ? `，已占用 ${quota.reservedCount}` : "，已占用 0"}
-                            {quota && quota.pendingCount > 0 ? `，处理中占用 ${quota.pendingCount}` : ""}
-                            {quota && quota.selectedCount > 0 ? `，本${quota.selectedCount}` : ""}
+                            {"\u5df2\u4e0a\u67b6"} {quota?.listedCount ?? 0}
+                            {quota ? `\uFF0C\u5DF2\u5360\u7528 ${quota.reservedCount}` : "\uFF0C\u5DF2\u5360\u7528 0"}
+                            {quota && quota.pendingCount > 0 ? `\uFF0C\u5904\u7406\u4E2D\u5360\u7528 ${quota.pendingCount}` : ""}
+                            {quota && quota.selectedCount > 0 ? `\uFF0C\u672C\u6B21\u9009\u62E9 ${quota.selectedCount}` : ""}
                           </span>
                         </div>
                       </div>
@@ -7184,7 +7203,7 @@ function buildListingQuotaWarnings(
     .filter((quota) => quota.overBy > 0)
     .map((quota) => {
       const shopName = shopNameById.get(quota.externalShopId) ?? quota.externalShopId;
-      return `${shopName}：限${quota.limit}，已上架 ${quota.listedCount}，处理中 ${quota.pendingCount}，已占用 ${quota.reservedCount}，剩${quota.remaining}，本${quota.selectedCount}`;
+      return `${shopName}\uff1a\u9650\u989d ${quota.limit}\uff0c\u5df2\u4e0a\u67b6 ${quota.listedCount}\uff0c\u5904\u7406\u4e2d ${quota.pendingCount}\uff0c\u5df2\u5360\u7528 ${quota.reservedCount}\uff0c\u5269\u4f59 ${quota.remaining}\uff0c\u672c\u6b21\u9009\u62e9 ${quota.selectedCount}`;
     });
 }
 
@@ -7193,36 +7212,8 @@ function safeCount(value: unknown) {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
-function buildOneClickListingDisabledReason({
-  isPending,
-  selectedCount,
-  productImageRuleId,
-  shopCount,
-  setupLoaded,
-  hasIncompleteShop,
-  hasMissingLocalTemplate,
-  localShopCount,
-}: {
-  isPending: boolean;
-  selectedCount: number;
-  productImageRuleId: string;
-  shopCount: number;
-  setupLoaded: boolean;
-  hasIncompleteShop: boolean;
-  hasMissingLocalTemplate: boolean;
-  localShopCount: number;
-}) {
-  const loading = false;
-  if (loading) return "任务处理中，请稍";
-  if (!isPending) return "只有待上传图片可以自动上";
-  if (!setupLoaded) return "店铺模板和上架配置还在加载中，请稍等";
-  if (selectedCount === 0) return "请先选择要自动上架的图片";
-  if (!productImageRuleId) return "请先选择商品类型和图片比例";
-  if (shopCount === 0) return "请先添加要上传的店铺";
-  if (hasIncompleteShop) return "请先为店铺选择或填写商品模";
-  if (localShopCount === 0) return "请先在本地助手同步店";
-  if (hasMissingLocalTemplate) return "请先为店铺选择本地 Ozon 商品模板";
-  return "";
+function buildOneClickListingDisabledReason(input: Parameters<typeof getAutoListingDisabledReason>[0]) {
+  return getAutoListingDisabledReason(input);
 }
 
 function serializeListingPreferences(preferences: CloudListingPreferences) {

@@ -87,7 +87,7 @@ export async function mockupRoutes(app) {
     "/mockups/:templateId/render",
     { preHandler: [requireAuth, requireMembership] },
     async (request) => {
-      assertCloudMockupRenderEnabled(request.currentUser.id);
+      await assertCloudMockupRenderEnabled(request.currentUser.id);
       const params = renderMockupParamsSchema.parse(request.params);
       const body = renderMockupSchema.parse(request.body);
       const template = await findPublishedMockupTemplate(params.templateId);
@@ -118,7 +118,7 @@ export async function mockupRoutes(app) {
     "/mockups/fangjin/render",
     { preHandler: [requireAuth, requireMembership] },
     async (request) => {
-      assertCloudMockupRenderEnabled(request.currentUser.id);
+      await assertCloudMockupRenderEnabled(request.currentUser.id);
       const body = renderMockupSchema.parse(request.body);
       const template = await findPublishedMockupTemplate("fangjin");
       if (!template) {
@@ -417,7 +417,7 @@ function extensionFromMime(mime) {
 function replaceImageExtension(filename, extension) {
   return `${filename.replace(/\.[^.]+$/, "")}.${extension}`;
 }
-function assertCloudMockupRenderEnabled(userId) {
+async function assertCloudMockupRenderEnabled(userId) {
   if (!config.CLOUD_MOCKUP_RENDER_ENABLED) {
     throw new AppError(
       503,
