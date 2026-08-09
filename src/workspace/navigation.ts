@@ -13,7 +13,10 @@ export type PageKey =
   | 'imageProcessing'
   | 'imageUploaded'
   | 'imageFeatured'
-  | 'license';
+  | 'license'
+  | 'adminUsers'
+  | 'adminFeatures'
+  | 'adminLogs';
 
 export type WorkspaceModuleKey = 'home' | 'assets' | 'listing' | 'orders' | 'tasks';
 
@@ -68,6 +71,10 @@ export const workspaceModules: readonly WorkspaceModule[] = [
     pages: [
       { key: 'jobs', label: '任务记录' },
       { key: 'license', label: '兑换密钥' },
+      // 管理页面仅 admin 可见，通过 featurePermissions 过滤
+      { key: 'adminUsers', label: '用户管理' },
+      { key: 'adminFeatures', label: '功能开关' },
+      { key: 'adminLogs', label: '操作日志' },
     ],
   },
 ];

@@ -1,0 +1,135 @@
+/**
+ * tokens.css — Ozon SJSQ 设计系统令牌
+ *
+ * 唯一样式真相源。在 styles.css 之前引入，定义所有设计令牌。
+ * layout-fix.css 中的 :root 覆盖块已迁移至此文件。
+ *
+ * 设计依据: docs/ui-design-system-spec.md
+ */
+
+:root {
+  /* ===== Color — Brand ===== */
+  --color-primary: #1677ff;
+  --color-primary-strong: #0958d9;
+  --color-primary-soft: #e6f4ff;
+  --color-primary-tint: #f0f7ff;
+
+  /* ===== Color — Semantic ===== */
+  --color-success-bg: #ecfdf3;
+  --color-success-border: #abefc6;
+  --color-success-text: #067647;
+
+  --color-warning-bg: #fff7e6;
+  --color-warning-border: #ffe0a3;
+  --color-warning-text: #ad6800;
+
+  --color-error-bg: #fef3f2;
+  --color-error-border: #fecdca;
+  --color-error-text: #b42318;
+
+  --color-info-bg: #e6f4ff;
+  --color-info-border: #bae0ff;
+  --color-info-text: #0958d9;
+
+  --color-accent-bg: #f4f3ff;
+  --color-accent-border: #d9d6fe;
+  --color-accent-text: #5925dc;
+
+  /* ===== Color — Neutral ===== */
+  --color-text: #1f2937;
+  --color-text-heading: #0f172a;
+  --color-text-secondary: #4b5563;
+  --color-muted: #6b7280;
+  --color-subtle: #8a94a6;
+
+  --color-bg: #f3f5f9;
+  --color-surface: #ffffff;
+  --color-surface-soft: #f8fafc;
+
+  --color-border: #e5e7eb;
+  --color-border-strong: #d9dee8;
+  --color-divider: #f1f3f7;
+
+  /* ===== Typography ===== */
+  --font-sans: "PingFang SC", "Microsoft YaHei UI", "HarmonyOS Sans SC", system-ui, -apple-system, sans-serif;
+  --font-mono: "SF Mono", "Consolas", "JetBrains Mono", monospace;
+
+  /* Font scale — 7 levels */
+  --fs-display: 26px;   /* 页面标题 (topbar h1) */
+  --fs-h1: 22px;        /* 区块大标题 */
+  --fs-h2: 17px;        /* 面板标题 */
+  --fs-h3: 15px;        /* 小标题 / 表头 */
+  --fs-body: 14px;      /* 正文 (= base) */
+  --fs-caption: 13px;   /* 辅助说明 */
+  --fs-micro: 12px;     /* 标签 / 时间戳 */
+
+  /* Line height */
+  --leading-tight: 1.25;
+  --leading-snug: 1.35;
+  --leading-normal: 1.5;
+
+  /* Font weight */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* ===== Spacing — 4px base, 10 levels ===== */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ===== Radius ===== */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-pill: 999px;
+
+  /* ===== Shadow ===== */
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.04);
+  --shadow-panel: 0 8px 22px rgba(15, 23, 42, 0.045);
+  --shadow-modal: 0 16px 48px rgba(15, 23, 42, 0.12);
+  --shadow-dropdown: 0 4px 16px rgba(15, 23, 42, 0.08);
+
+  /* ===== Transition ===== */
+  --transition-fast: 160ms ease;
+  --transition-normal: 240ms ease;
+  --transition-slow: 400ms ease;
+
+  /* ===== Z-index ===== */
+  --z-base: 0;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal: 1000;
+  --z-toast: 1100;
+}
+
+/* ===== Dark theme (planned) ===== */
+[data-theme="dark"] {
+  --color-primary: #3b82f6;
+  --color-primary-strong: #60a5fa;
+  --color-primary-soft: #1e3a5f;
+  --color-primary-tint: #172554;
+
+  --color-text: #f1f5f9;
+  --color-text-heading: #f8fafc;
+  --color-text-secondary: #cbd5e1;
+  --color-muted: #94a3b8;
+  --color-subtle: #64748b;
+
+  --color-bg: #0f172a;
+  --color-surface: #1e293b;
+  --color-surface-soft: #334155;
+
+  --color-border: #334155;
+  --color-border-strong: #475569;
+  --color-divider: #1e293b;
+}

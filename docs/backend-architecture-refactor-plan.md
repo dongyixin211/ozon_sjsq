@@ -1,9 +1,11 @@
 # Ozon SJSQ 后端架构重构方案
 
-> **版本**: 1.0
+> **版本**: 1.2
 > **日期**: 2026-08-08
 > **范围**: server/ 后端工程
 > **目标**: 从扁平单文件结构重构为分层模块化架构，提升扩展性、稳定性、可测试性和团队协作效率
+> **v1.1 更新**: 新增第九章 RBAC 角色权限控制（角色扩展 + 功能标识 + 菜单过滤）
+> **v1.2 更新**: 新增第 9.9 节 前端管理页面设计（用户管理 + 功能开关 + 操作日志）
 
 ---
 
@@ -663,3 +665,543 @@ modules/gallery/
 - [ ] 外部服务故障时熔断器触发，核心功能不受影响
 - [ ] 优雅关闭：SIGTERM 后在途请求完成再退出
 - [ ] API 响应格式与重构前完全一致（客户端零改动）
+- [ ] RBAC：member 用户无法访问 6 个测试中功能的 API 和菜单
+- [ ] RBAC：beta/admin 用户可以正常访问全部功能
+- [ ] RBAC：管理员可以通过 API 授予/撤销用户的功能权限
+- [ ] RBAC：前端菜单根据 `/api/v1/auth/me` 返回的 features 动态过滤
+
+---
+
+## 九、RBAC 角色权限控制
+
+### 9.1 背景与需求
+
+部分功能（图片上传、待上传图片、上传中、已上传图片、精品图库、自动上品方案）仍在测试阶段，需要限制为少部分用户可用。通过角色 + 功能标识的双重控制机制，实现按角色和按用户两种粒度的菜单/接口可见性管理。
+
+### 9.2 角色定义
+
+| 角色 | 说明 | 权限范围 |
+|------|------|----------|
+| `member` | 普通用户（默认） | 仅可见基础功能（首页、素材工具、店铺管理、订单、任务记录、兑换密钥） |
+| `beta` | 测试用户（新增） | 在 member 基础上，可访问所有标记为测试中的功能 |
+| `admin` | 管理员 | 全部功能 + 管理后台 + 用户角色/权限管理 |
+
+当前 `auth.ts` 中的 `CurrentUser` 类型需要扩展：
+
+```typescript
+export interface CurrentUser {
+  id: string;
+  phone: string;
+  role: "member" | "beta" | "admin";  // 新增 beta
+  deviceId: string;
+  membershipPlan: string | null;
+  membershipExpiresAt: string | null;
+  features: string[];  // 新增：用户可访问的功能标识列表
+}
+```
+
+### 9.3 数据库设计
+
+迁移文件：`migrations/031_rbac_feature_flags.sql`
+
+#### 表 1: feature_flags（功能标识）
+
+```sql
+CREATE TABLE feature_flags (
+  key           TEXT PRIMARY KEY,          -- 功能标识，如 'gallery.upload'
+  label         TEXT NOT NULL,             -- 显示名称，如 '图片上传'
+  module        TEXT NOT NULL,             -- 所属模块，如 '素材' / '上架'
+  description   TEXT,                      -- 功能描述
+  default_roles TEXT[] NOT NULL DEFAULT '{}', -- 默认可访问的角色列表
+  is_active     BOOLEAN NOT NULL DEFAULT true,
+  sort_order    INTEGER NOT NULL DEFAULT 0,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+#### 表 2: user_feature_access（用户个人功能授权）
+
+```sql
+CREATE TABLE user_feature_access (
+  user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  feature_key  TEXT NOT NULL REFERENCES feature_flags(key) ON DELETE CASCADE,
+  granted_by   UUID REFERENCES users(id),     -- 授予者
+  granted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ,                    -- 过期时间（NULL = 永久）
+  revoked_at   TIMESTAMPTZ,                    -- 撤销时间（NULL = 未撤销）
+  PRIMARY KEY (user_id, feature_key)
+);
+```
+
+#### 初始功能标识数据
+
+| key | label | module | default_roles |
+|-----|-------|--------|---------------|
+| `gallery.upload` | 图片上传 | 素材 | {beta, admin} |
+| `gallery.pending` | 待上传图片 | 素材 | {beta, admin} |
+| `gallery.processing` | 上传中 | 素材 | {beta, admin} |
+| `gallery.uploaded` | 已上传图片 | 素材 | {beta, admin} |
+| `gallery.featured` | 精品图库 | 素材 | {beta, admin} |
+| `listing.auto_plans` | 自动上品方案 | 上架 | {beta, admin} |
+
+其余菜单项（首页、转3:4水印、GPT图片生成、AI生成标题、图片重命名、店铺管理、订单查询、任务记录、兑换密钥）无 feature_key，默认所有角色可见。
+
+### 9.4 权限校验逻辑
+
+#### 中间件：requireFeature
+
+```typescript
+// core/auth/feature-middleware.ts
+import { pool } from "../database/pool.js";
+import { AppError } from "../errors/AppError.js";
+import type { FastifyRequest } from "fastify";
+
+const featureFlagCache = new Map<string, { defaultRoles: string[]; fetchedAt: number }>();
+const CACHE_TTL_MS = 60_000; // 1 分钟缓存
+
+async function getFeatureFlag(featureKey: string) {
+  const cached = featureFlagCache.get(featureKey);
+  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    return cached;
+  }
+  const result = await pool.query(
+    "SELECT default_roles FROM feature_flags WHERE key = $1 AND is_active = true",
+    [featureKey]
+  );
+  if (result.rows.length === 0) return null;
+  const flag = {
+    defaultRoles: result.rows[0].default_roles,
+    fetchedAt: Date.now(),
+  };
+  featureFlagCache.set(featureKey, flag);
+  return flag;
+}
+
+export function requireFeature(featureKey: string) {
+  return async (request: FastifyRequest) => {
+    const user = request.currentUser;
+    if (!user) {
+      throw new AppError(401, "AUTH_REQUIRED", "请先登录");
+    }
+
+    // admin 始终放行
+    if (user.role === "admin") return;
+
+    // 检查角色默认权限
+    const flag = await getFeatureFlag(featureKey);
+    if (!flag) {
+      throw new AppError(403, "FEATURE_NOT_FOUND", "功能不存在或已下线");
+    }
+    if (flag.defaultRoles.includes(user.role)) return;
+
+    // 检查个人授权
+    const access = await pool.query(
+      `SELECT 1 FROM user_feature_access
+       WHERE user_id = $1 AND feature_key = $2
+         AND revoked_at IS NULL
+         AND (expires_at IS NULL OR expires_at > now())`,
+      [user.id, featureKey]
+    );
+    if (access.rows.length === 0) {
+      throw new AppError(403, "FEATURE_FORBIDDEN", "您暂无权限使用此功能");
+    }
+  };
+}
+```
+
+#### 路由绑定示例
+
+```typescript
+// modules/gallery/routes.ts
+import { requireAuth } from "../../core/auth/middleware.js";
+import { requireFeature } from "../../core/auth/feature-middleware.js";
+
+app.get("/api/v1/gallery/upload",
+  { preHandler: [requireAuth, requireFeature("gallery.upload")] },
+  uploadController.getList
+);
+
+app.post("/api/v1/gallery/upload",
+  { preHandler: [requireAuth, requireFeature("gallery.upload")] },
+  uploadController.create
+);
+
+// modules/listing/routes.ts
+app.get("/api/v1/listing/auto-plans",
+  { preHandler: [requireAuth, requireFeature("listing.auto_plans")] },
+  planController.list
+);
+```
+
+### 9.5 API 设计
+
+#### 用户信息接口（扩展）
+
+```
+GET /api/v1/auth/me
+```
+
+响应新增 `features` 字段：
+
+```json
+{
+  "user": {
+    "id": "...",
+    "phone": "...",
+    "role": "member",
+    "membershipPlan": "...",
+    "membershipExpiresAt": "..."
+  },
+  "features": ["gallery.upload", "gallery.pending"]
+}
+```
+
+`features` 数组的计算逻辑：
+1. `admin` 角色返回 `["*"]`（全部功能）
+2. `beta` 角色返回所有 `is_active = true` 的 feature_keys
+3. `member` 角色返回该用户在 `user_feature_access` 中有效的 feature_keys
+4. 合并角色默认权限和个人授权（取并集）
+
+#### 管理接口
+
+```
+GET    /api/v1/admin/features                      列出所有功能标识
+GET    /api/v1/admin/users                          用户列表（含角色）
+PUT    /api/v1/admin/users/:id/role                 修改用户角色
+       Body: { "role": "member" | "beta" | "admin" }
+GET    /api/v1/admin/users/:id/features             查看用户功能授权
+POST   /api/v1/admin/users/:id/features             授予功能权限
+       Body: { "featureKey": "gallery.upload", "expiresAt": "2026-12-31T23:59:59Z" }
+DELETE /api/v1/admin/users/:id/features/:featureKey 撤销功能权限
+```
+
+所有管理接口需要 `requireAdminToken` 中间件（已有）。
+
+### 9.6 前端菜单过滤机制
+
+#### 前端 PageKey → Feature Key 映射
+
+```typescript
+// src/workspace/featurePermissions.ts
+
+export const PAGE_FEATURE_MAP: Partial<Record<PageKey, string>> = {
+  imageUpload:      "gallery.upload",
+  imagePending:     "gallery.pending",
+  imageProcessing:  "gallery.processing",
+  imageUploaded:    "gallery.uploaded",
+  imageFeatured:    "gallery.featured",
+  autoListingPlans: "listing.auto_plans",
+};
+
+export function filterModulesByFeatures(
+  modules: readonly WorkspaceModule[],
+  features: Set<string>
+): WorkspaceModule[] {
+  // features 包含 "*" 表示全部权限
+  if (features.has("*")) return [...modules];
+
+  return modules
+    .map((mod) => ({
+      ...mod,
+      pages: mod.pages.filter((page) => {
+        const featureKey = PAGE_FEATURE_MAP[page.key];
+        if (!featureKey) return true; // 无 featureKey 的页面默认可见
+        return features.has(featureKey);
+      }),
+    }))
+    .filter((mod) => mod.pages.length > 0); // 过滤掉空模块
+}
+```
+
+#### 前端集成
+
+```typescript
+// src/App.tsx 或全局状态管理
+const { user, features } = useCloudAuth(); // 从 /api/v1/auth/me 获取
+
+const visibleModules = useMemo(
+  () => filterModulesByFeatures(workspaceModules, new Set(features)),
+  [features]
+);
+
+// 侧边栏只渲染 visibleModules
+```
+
+#### 前端直接访问 URL 的保护
+
+即使用户直接输入 URL 访问受限页面，前端也需要拦截：
+
+```typescript
+// 路由守卫
+function PageGuard({ pageKey, children }: { pageKey: PageKey; children: React.ReactNode }) {
+  const { features } = useCloudAuth();
+  const featureKey = PAGE_FEATURE_MAP[pageKey];
+
+  if (featureKey && !features.has("*") && !features.has(featureKey)) {
+    return <NoPermissionPage />;
+  }
+  return <>{children}</>;
+}
+```
+
+### 9.7 目录结构补充
+
+在 `core/auth/` 下新增权限相关文件：
+
+```
+core/auth/
+├── middleware.ts              # requireAuth / requireMembership (已有)
+├── feature-middleware.ts      # requireFeature (新增)
+├── feature-service.ts         # 功能标识缓存 + 用户权限计算 (新增)
+├── token.ts                   # JWT 签发/验证 (已有)
+└── types.ts                   # CurrentUser 类型 (扩展 features 字段)
+```
+
+在 `modules/admin/` 下新增权限管理接口：
+
+```
+modules/admin/
+├── controllers/
+│   ├── user-role.controller.ts       # 用户角色管理 (新增)
+│   └── feature-access.controller.ts  # 功能授权管理 (新增)
+├── services/
+│   ├── role.service.ts               # 角色变更逻辑 (新增)
+│   └── feature-access.service.ts     # 授权/撤销逻辑 (新增)
+├── repositories/
+│   ├── feature-flag.repository.ts    # feature_flags 表操作 (新增)
+│   └── user-feature-access.repository.ts # user_feature_access 表操作 (新增)
+└── routes.ts                         # 注册管理路由
+```
+
+### 9.8 迁移步骤
+
+RBAC 功能可以独立于架构重构先行实施，不影响现有代码：
+
+| 步骤 | 内容 | 依赖 |
+|------|------|------|
+| 1 | 执行 `031_rbac_feature_flags.sql` 迁移 | 无 |
+| 2 | 扩展 `CurrentUser` 类型，加入 `role: "beta"` 和 `features: string[]` | 步骤 1 |
+| 3 | 实现 `feature-service.ts`（权限计算 + 缓存） | 步骤 1 |
+| 4 | 实现 `requireFeature` 中间件 | 步骤 3 |
+| 5 | 扩展 `/api/v1/auth/me` 接口，返回 `features` 数组 | 步骤 3 |
+| 6 | 在 6 个测试中功能的路由上挂载 `requireFeature` | 步骤 4 |
+| 7 | 实现管理接口（角色变更、功能授权/撤销） | 步骤 3 |
+| 8 | 前端添加 `featurePermissions.ts` + 菜单过滤 | 步骤 5 |
+| 9 | 前端添加路由守卫 + 无权限提示页 | 步骤 8 |
+| 10 | 将需要测试权限的用户角色改为 `beta`，或通过管理接口单独授权 | 步骤 7 |
+
+**关键设计决策**：
+
+- **feature_flags 缓存**：功能标识变更频率极低，中间件内置 60 秒内存缓存，避免每次请求查库
+- **个人授权覆盖角色**：`member` 用户也可通过 `user_feature_access` 单独开通某个功能，无需改角色。这比改角色更精细
+- **expires_at 字段**：个人授权支持设置过期时间，适合临时测试场景
+- **is_active 全局开关**：功能上线后只需 `UPDATE feature_flags SET is_active = true` 即可对所有人开放，或 `SET default_roles = '{member, beta, admin}'` 直接纳入普通角色
+- **前端双重保护**：菜单过滤（用户看不到入口）+ 路由守卫（直接访问 URL 也拦截）+ 后端中间件（API 层面兜底）
+
+### 9.9 前端管理页面设计
+
+RBAC 功能需要配套的管理界面，让管理员在页面上直接操作用户角色和功能授权，而非通过手动改数据库。
+
+#### 页面挂载
+
+在 `navigation.ts` 中新增 `adminUsers` 页面，挂载在"任务/设置"模块下，**仅 admin 角色可见**：
+
+```typescript
+// navigation.ts 扩展
+export type PageKey =
+  | 'dashboard'
+  | 'materialPortrait'
+  // ... 现有 key
+  | 'license'
+  | 'adminUsers'      // 新增
+  | 'adminFeatures'   // 新增 (功能开关管理)
+  | 'adminLogs';      // 新增 (操作日志)
+
+// 在 tasks 模块下新增 admin 专属页面
+{
+  key: 'tasks',
+  label: '任务/设置',
+  pages: [
+    { key: 'jobs', label: '任务记录' },
+    { key: 'license', label: '兑换密钥' },
+    // 以下页面仅 admin 可见，通过 filterModulesByFeatures 过滤
+    { key: 'adminUsers', label: '用户管理' },
+    { key: 'adminFeatures', label: '功能开关' },
+    { key: 'adminLogs', label: '操作日志' },
+  ],
+}
+```
+
+#### 菜单可见性控制
+
+admin 专属页面通过 `PAGE_FEATURE_MAP` 统一控制：
+
+```typescript
+// featurePermissions.ts 扩展
+export const PAGE_FEATURE_MAP: Partial<Record<PageKey, string>> = {
+  // ... 现有测试功能映射
+  imageUpload:      "gallery.upload",
+  // ...
+  adminUsers:       "admin.panel",       // 新增
+  adminFeatures:    "admin.panel",       // 新增
+  adminLogs:        "admin.panel",       // 新增
+};
+
+// feature_flags 表初始化数据中新增
+-- admin.panel 功能：仅 admin 角色可见
+INSERT INTO feature_flags (feature_key, module, label, description, default_roles, is_active)
+VALUES ('admin.panel', 'admin', '管理后台', '用户角色与功能权限管理', '{admin}', true);
+```
+
+#### 用户管理页面 (AdminUsersPage)
+
+**页面结构**：
+
+```
+┌─────────────────────────────────────────────────┐
+│ [用户管理] [功能开关] [操作日志]    ← Tab 切换    │
+├─────────────────────────────────────────────────┤
+│  187        162        21         4             │
+│ 总用户数   member    beta      admin  ← 统计卡片 │
+├─────────────────────────────────────────────────┤
+│ [搜索手机号/用户名] [全部角色 ▼]     [导出CSV]   │
+├─────────────────────────────────────────────────┤
+│ 用户          角色      会员状态    功能授权  操作│
+│ 138****8888   [admin]   年度·有效  全部功能  —   │
+│ 139****2222   [beta]    月度·有效  全部测试  改角色 授权│
+│ 137****5566   [member]  季度·到期  2项已授权 改角色 授权│
+│ 135****7788   [member]  无会员     0项       改角色 授权│
+├─────────────────────────────────────────────────┤
+│ 共 187 用户 · 第 1/19 页         < 1 [2] 3 >   │
+└─────────────────────────────────────────────────┘
+```
+
+**"改角色"下拉菜单**（点击展开）：
+
+```
+┌─────────────────────────┐
+│ ● 管理员 (admin)   当前  │
+│ ○ 测试用户 (beta)        │
+│ ○ 普通用户 (member)      │
+└─────────────────────────┘
+```
+
+选择后调用 `PUT /api/v1/admin/users/:id/role`，成功后：
+- 用户列表中角色 Badge 立即更新
+- 弹出 Toast 提示"角色已更新"
+- 该用户下次登录时 `features` 数组自动变化，菜单随之改变
+
+**"功能授权"弹窗**（点击弹出 Modal）：
+
+```
+┌─────────────────────────────────────────────────┐
+│ 功能授权 — 137****5566 (王用户)            ×   │
+├─────────────────────────────────────────────────┤
+│ 测试中功能 (共 6 项)                             │
+│                                                 │
+│ ☑ 图片上传      gallery.upload      永久有效    │
+│ ☑ 待上传图片    gallery.pending     2026-09-30到期│
+│ ☐ 上传中        gallery.processing  未授权      │
+│ ☐ 已上传图片    gallery.uploaded    未授权      │
+│ ☐ 精品图库      gallery.featured    未授权      │
+│ ☐ 自动上品方案  listing.auto_plans  未授权      │
+│                                                 │
+│ 勾选后可选: [永久] [7天] [30天] [自定义日期]     │
+├─────────────────────────────────────────────────┤
+│                          [取消]  [保存授权]      │
+└─────────────────────────────────────────────────┘
+```
+
+**操作逻辑**：
+- 勾选功能 → 调用 `POST /api/v1/admin/users/:id/features`，Body 含 `featureKey` 和可选 `expiresAt`
+- 取消勾选 → 调用 `DELETE /api/v1/admin/users/:id/features/:featureKey`
+- 保存后弹窗关闭，用户列表"功能授权"列数字更新
+- 已授权项显示绿色状态（永久有效 / 到期日期），未授权项灰色
+
+#### 功能开关页面 (AdminFeaturesPage)
+
+管理 `feature_flags` 表的全局开关，用于功能上线/下线控制：
+
+```
+┌─────────────────────────────────────────────────┐
+│ 功能标识管理                                     │
+├─────────────────────────────────────────────────┤
+│ 功能Key          模块    名称        默认角色  状态│
+│ gallery.upload   素材    图片上传    [beta]   开启│
+│ gallery.pending  素材    待上传图片  [beta]   开启│
+│ listing.auto_plans 上架  自动上品方案 [beta]   开启│
+│ admin.panel      管理    管理后台    [admin]  开启│
+├─────────────────────────────────────────────────┤
+│ 点击"默认角色"可编辑哪些角色默认可见该功能        │
+│ 点击"状态"开关可一键上线/下线功能               │
+└─────────────────────────────────────────────────┘
+```
+
+**关键操作**：
+- 功能正式上线：将 `default_roles` 改为 `{member, beta, admin}`，所有用户立即获得权限
+- 紧急下线：将 `is_active` 改为 `false`，即使已授权用户也无法访问
+- 修改后 60 秒内全量生效（中间件缓存 TTL）
+
+#### 操作日志页面 (AdminLogsPage)
+
+记录所有权限变更操作，便于审计：
+
+```
+┌─────────────────────────────────────────────────┐
+│ 操作日志                                        │
+├─────────────────────────────────────────────────┤
+│ 时间          操作人      操作      目标用户     │
+│ 14:32:15     张管理员    改角色    137****5566   │
+│                        member → beta            │
+│ 14:28:03     张管理员    授权      137****5566   │
+│                        gallery.upload (永久)    │
+│ 14:15:42     张管理员    撤销授权   139****2222  │
+│                        gallery.featured         │
+└─────────────────────────────────────────────────┘
+```
+
+日志表设计（可后续添加到迁移中）：
+
+```sql
+CREATE TABLE IF NOT EXISTS admin_audit_logs (
+  id BIGSERIAL PRIMARY KEY,
+  admin_id UUID NOT NULL REFERENCES users(id),
+  action VARCHAR(40) NOT NULL,        -- 'role_change' | 'feature_grant' | 'feature_revoke'
+  target_user_id UUID REFERENCES users(id),
+  feature_key VARCHAR(80),
+  old_value TEXT,
+  new_value TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_audit_logs_created ON admin_audit_logs(created_at DESC);
+CREATE INDEX idx_audit_logs_target ON admin_audit_logs(target_user_id);
+```
+
+#### 前端组件结构
+
+```
+src/features/admin/
+├── AdminUsersPage.tsx          # 用户管理页面
+├── AdminFeaturesPage.tsx       # 功能开关页面
+├── AdminLogsPage.tsx           # 操作日志页面
+├── components/
+│   ├── UserTable.tsx           # 用户列表表格
+│   ├── RoleSelectDropdown.tsx  # 改角色下拉菜单
+│   ├── FeatureAccessModal.tsx  # 功能授权弹窗
+│   └── FeatureToggleTable.tsx  # 功能开关表格
+└── hooks/
+    ├── useAdminUsers.ts        # 用户列表分页/搜索
+    ├── useUserRole.ts          # 改角色 mutation
+    └── useFeatureAccess.ts     # 授权/撤销 mutation
+```
+
+#### 交互细节
+
+| 场景 | 行为 |
+|------|------|
+| admin 用户降级自己 | 弹确认框警告"您将失去管理权限"，确认后执行，下次登录生效 |
+| 改角色后用户在线 | 用户下次请求 `/api/v1/auth/me` 时拿到新 `features`，前端自动刷新菜单 |
+| 授权弹窗中切换过期时间 | 已勾选项的过期时间联动更新，无需重新勾选 |
+| 批量操作 | 用户列表支持多选，批量改角色 / 批量授权（后续迭代） |
+| 权限变更通知 | 可选：WebSocket 推送通知目标用户"您的权限已更新"（后续迭代） |

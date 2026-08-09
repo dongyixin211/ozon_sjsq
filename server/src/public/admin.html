@@ -386,9 +386,45 @@
     .pager { margin-top: 14px; padding-top: 2px; }
     .message { box-shadow: 0 3px 10px rgba(20,39,73,.06); }
     @media (max-width: 980px) { .admin-shell { grid-template-columns: 1fr; } .sidebar { position: static; height:auto; } .nav-list { grid-template-columns: repeat(2,minmax(0,1fr)); } .nav-group-label { grid-column: 1 / -1; } .main { padding: 18px 14px 28px; } }
+
+    .admin-login-screen { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: #eef4fb; }
+    .admin-login-screen.hidden { display: none; }
+    .admin-login-card { width: min(100%, 380px); display: grid; gap: 16px; padding: 28px; border: 1px solid var(--color-border); border-radius: 14px; background: #fff; box-shadow: 0 16px 40px rgba(20, 39, 73, .16); }
+    .admin-login-card .brand { margin-bottom: 4px; }
+    .admin-login-card .primary { width: 100%; }
+    .admin-session-box { display: grid; gap: 8px; }
+
+    .nav-list { display: grid; gap: 6px; }
+    .nav-group { border-bottom: 1px solid #edf1f6; padding-bottom: 6px; }
+    .nav-group-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; border: 0; background: transparent; padding: 10px 12px; color: #66758c; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-align: left; }
+    .nav-group-toggle:hover { background: #f3f7fc; color: #1f5dad; }
+    .nav-group-chevron { font-size: 18px; line-height: 1; transform: rotate(0deg); transition: transform .16s ease; }
+    .nav-group.is-open .nav-group-chevron { transform: rotate(90deg); }
+    .nav-group-links { display: none; gap: 3px; padding: 0 0 3px; }
+    .nav-group.is-open .nav-group-links { display: grid; }
+    .nav-group-links .nav-item { margin: 0 6px; padding: 10px 12px; border-radius: 6px; }
+    .role-chip-group { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+    .role-chip { display: inline-flex; align-items: center; min-height: 28px; margin: 0; padding: 0 9px; border: 1px solid #d7e0eb; border-radius: 6px; background: #fff; color: #5d6a7e; cursor: pointer; font-size: 12px; font-weight: 600; line-height: 1; white-space: nowrap; }
+    .role-chip input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    .role-chip.is-selected { border-color: #2463c8; background: #eaf2ff; color: #173f86; }
+    .role-badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+    .role-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 7px; border-radius: 5px; background: #eef3f8; color: #435268; font-size: 12px; font-weight: 600; white-space: nowrap; }
+    .feature-name { display: grid; gap: 2px; min-width: 190px; }
+    .feature-key, .feature-description { color: var(--color-muted); font-size: 12px; line-height: 1.35; }
+    .feature-description { max-width: 360px; }
+    #page-roles td, #page-features td { vertical-align: middle; }
   </style>
 </head>
 <body>
+  <div id="loginScreen" class="admin-login-screen">
+    <form id="adminLoginForm" class="admin-login-card">
+      <div class="brand"><strong>Ozon SJSQ</strong><span>管理后台登录</span></div>
+      <div class="field"><label for="adminPhone">手机号</label><input id="adminPhone" name="phone" autocomplete="username" required /></div>
+      <div class="field"><label for="adminPassword">密码</label><input id="adminPassword" name="password" type="password" autocomplete="current-password" required /></div>
+      <button class="primary" type="submit">登录管理后台</button>
+      <p id="adminLoginMessage" class="muted"></p>
+    </form>
+  </div>
   <div class="admin-shell">
     <aside class="sidebar">
       <div class="brand">
@@ -396,29 +432,31 @@
         <span>管理后台</span>
       </div>
       <nav class="nav-list" aria-label="管理后台导航">
-        <span class="nav-group-label">工作台</span>
-        <a class="nav-item" data-page-link="overview" href="/admin/ui/overview"><span>概览</span><span>›</span></a>
-        <span class="nav-group-label">账户与授权</span>
-        <a class="nav-item" data-page-link="users" href="/admin/ui/users"><span>用户与会员</span><span>›</span></a>
-        <a class="nav-item" data-page-link="licenses" href="/admin/ui/licenses"><span>授权码</span><span>›</span></a>
-        <span class="nav-group-label">内容与业务</span>
-        <a class="nav-item" data-page-link="gallery" href="/admin/ui/gallery"><span>图库资产</span><span>›</span></a>
-        <a class="nav-item" data-page-link="featured" href="/admin/ui/featured"><span>精品库</span><span>›</span></a>
-        <a class="nav-item" data-page-link="orders" href="/admin/ui/orders"><span>订单与店铺</span><span>›</span></a>
-        <a class="nav-item" data-page-link="mockups" href="/admin/ui/mockups"><span>样机管理</span><span>›</span></a>
-        <span class="nav-group-label">系统配置</span>
-        <a class="nav-item" data-page-link="ai" href="/admin/ui/ai"><span>AI 设置</span><span>›</span></a>
-        <a class="nav-item" data-page-link="imageRules" href="/admin/ui/imageRules"><span>商品比例规则</span><span>›</span></a>
+        <section class="nav-group" data-nav-group="workspace">
+          <button class="nav-group-toggle" type="button" aria-expanded="false"><span>工作台</span><span class="nav-group-chevron">›</span></button>
+          <div class="nav-group-links"><a class="nav-item" data-page-link="overview" href="/admin/ui/overview"><span>概览</span></a></div>
+        </section>
+        <section class="nav-group" data-nav-group="accounts">
+          <button class="nav-group-toggle" type="button" aria-expanded="false"><span>账户与授权</span><span class="nav-group-chevron">›</span></button>
+          <div class="nav-group-links"><a class="nav-item" data-page-link="users" href="/admin/ui/users"><span>用户与会员</span></a><a class="nav-item" data-page-link="licenses" href="/admin/ui/licenses"><span>授权码</span></a></div>
+        </section>
+        <section class="nav-group" data-nav-group="permissions">
+          <button class="nav-group-toggle" type="button" aria-expanded="false"><span>权限管理</span><span class="nav-group-chevron">›</span></button>
+          <div class="nav-group-links"><a class="nav-item" data-page-link="roles" href="/admin/ui/roles"><span>用户角色</span></a><a class="nav-item" data-page-link="features" href="/admin/ui/features"><span>功能开关</span></a><a class="nav-item" data-page-link="auditLogs" href="/admin/ui/auditLogs"><span>操作日志</span></a></div>
+        </section>
+        <section class="nav-group" data-nav-group="business">
+          <button class="nav-group-toggle" type="button" aria-expanded="false"><span>内容与业务</span><span class="nav-group-chevron">›</span></button>
+          <div class="nav-group-links"><a class="nav-item" data-page-link="gallery" href="/admin/ui/gallery"><span>图库资产</span></a><a class="nav-item" data-page-link="featured" href="/admin/ui/featured"><span>精品库</span></a><a class="nav-item" data-page-link="orders" href="/admin/ui/orders"><span>订单与店铺</span></a><a class="nav-item" data-page-link="mockups" href="/admin/ui/mockups"><span>样机管理</span></a></div>
+        </section>
+        <section class="nav-group" data-nav-group="settings">
+          <button class="nav-group-toggle" type="button" aria-expanded="false"><span>系统配置</span><span class="nav-group-chevron">›</span></button>
+          <div class="nav-group-links"><a class="nav-item" data-page-link="ai" href="/admin/ui/ai"><span>AI 设置</span></a><a class="nav-item" data-page-link="imageRules" href="/admin/ui/imageRules"><span>商品比例规则</span></a></div>
+        </section>
       </nav>
-      <div class="token-box">
-        <div class="field">
-          <label>ADMIN_TOKEN</label>
-          <input id="adminToken" type="password" autocomplete="current-password" placeholder="管理员口令" />
-        </div>
-        <div class="toolbar">
-          <button class="primary" id="saveToken">保存</button>
-          <button class="secondary" id="clearToken">清除</button>
-        </div>
+      <div class="token-box admin-session-box">
+        <div class="muted">已登录管理员</div>
+        <strong id="adminPhoneLabel">-</strong>
+        <button class="secondary" id="logoutAdmin" type="button">退出登录</button>
       </div>
     </aside>
 
@@ -527,6 +565,7 @@
               <thead>
                 <tr>
                   <th>手机号</th>
+                  <th>角色</th>
                   <th>会员</th>
                   <th>到期时间</th>
                   <th>设备</th>
@@ -542,6 +581,16 @@
           </div>
           <div id="usersPager" class="pager"></div>
         </div>
+      </section>
+
+      <section id="page-roles" class="page">
+        <div class="panel"><div class="panel-header"><div><h2>用户角色</h2><span class="muted">选择用户角色后立即生效</span></div><button class="secondary" id="loadRoles">刷新</button></div><div class="table-wrap"><table><thead><tr><th>手机号</th><th>昵称</th><th>当前角色</th><th>保存</th></tr></thead><tbody id="rolesBody"></tbody></table></div></div>
+      </section>
+      <section id="page-features" class="page">
+        <div class="panel"><div class="panel-header"><div><h2>功能开关</h2><span class="muted">设置功能默认可见的角色</span></div><button class="secondary" id="loadFeatures">刷新</button></div><div class="table-wrap"><table><thead><tr><th>功能</th><th>分组</th><th>默认角色</th><th>状态</th><th>保存</th></tr></thead><tbody id="featuresBody"></tbody></table></div></div>
+      </section>
+      <section id="page-auditLogs" class="page">
+        <div class="panel"><div class="panel-header"><div><h2>操作日志</h2><span class="muted">角色与功能授权变更记录</span></div><button class="secondary" id="loadAuditLogs">刷新</button></div><div class="table-wrap"><table><thead><tr><th>时间</th><th>操作</th><th>管理员</th><th>目标用户</th><th>功能</th><th>变更内容</th></tr></thead><tbody id="auditLogsBody"></tbody></table></div></div>
       </section>
 
       <section id="page-licenses" class="page">
@@ -928,9 +977,12 @@
   </div>
 
   <script>
-    const TOKEN_KEY = "ozon_sjsq_admin_token";
+    const TOKEN_KEY = "ozon_sjsq_admin_session";
     const pageMeta = {
       overview: ["概览", "关键运营数据"],
+      roles: ["用户角色", "管理用户角色权限"],
+      features: ["功能开关", "设置各功能默认可见角色"],
+      auditLogs: ["操作日志", "查看角色与功能授权记录"],
       users: ["用户", "注册用户、会员状态、设备解绑"],
       licenses: ["授权码", "生成、筛选和追踪授权码"],
       ai: ["AI 设置", "云端模型、接口和默认 Prompt"],
@@ -948,13 +1000,21 @@
       featured: { offset: 0, limit: 10, total: 0 },
       imageRules: { total: 0 },
       mockups: { total: 0 },
+      roles: { offset: 0, limit: 100, total: 0 },
+      features: { total: 0 },
+      auditLogs: { offset: 0, limit: 100, total: 0 },
     };
-    const pageOrder = ["overview", "users", "licenses", "ai", "imageRules", "gallery", "featured", "orders", "mockups"];
+    const pageOrder = ["overview", "users", "licenses", "roles", "features", "auditLogs", "ai", "imageRules", "gallery", "featured", "orders", "mockups"];
+    const pageGroup = { overview: "workspace", users: "accounts", licenses: "accounts", roles: "permissions", features: "permissions", auditLogs: "permissions", gallery: "business", featured: "business", orders: "business", mockups: "business", ai: "settings", imageRules: "settings" };
     const loadedPages = new Set();
     const loadingPages = new Map();
     const warmupTimers = [];
     const message = document.getElementById("message");
-    const adminToken = document.getElementById("adminToken");
+    const loginScreen = document.getElementById("loginScreen");
+    const adminLoginForm = document.getElementById("adminLoginForm");
+    const adminPhone = document.getElementById("adminPhone");
+    const adminPassword = document.getElementById("adminPassword");
+    const adminPhoneLabel = document.getElementById("adminPhoneLabel");
     const keysOutput = document.getElementById("keysOutput");
     const aiFields = {
       imageProvider: document.getElementById("imageProvider"),
@@ -976,9 +1036,12 @@
       descriptionPromptTemplate: document.getElementById("descriptionPromptTemplate"),
     };
 
-    adminToken.value = localStorage.getItem(TOKEN_KEY) || "";
-    setMessage(adminToken.value ? "已读取管理员口令" : "请填写管理员口令");
+    adminLoginForm.addEventListener("submit", loginAdmin);
+    document.getElementById("logoutAdmin").onclick = logoutAdmin;
 
+    document.querySelectorAll("[data-nav-group]").forEach((group) => {
+      group.querySelector(".nav-group-toggle").addEventListener("click", () => toggleNavGroup(group.dataset.navGroup));
+    });
     document.querySelectorAll("[data-page-link]").forEach((link) => {
       link.addEventListener("click", (event) => {
         event.preventDefault();
@@ -990,17 +1053,9 @@
     });
     window.addEventListener("popstate", () => showPage(routePage()));
 
-    document.getElementById("saveToken").onclick = () => {
-      saveAdminToken();
-    };
-    adminToken.addEventListener("keydown", submitOnEnter(saveAdminToken));
-    document.getElementById("clearToken").onclick = () => {
-      localStorage.removeItem(TOKEN_KEY);
-      adminToken.value = "";
-      loadedPages.clear();
-      clearWarmupTimers();
-      setMessage("已清除管理员口令");
-    };
+    document.getElementById("loadRoles").onclick = () => loadPageData("roles", { force: true });
+    document.getElementById("loadFeatures").onclick = () => loadPageData("features", { force: true });
+    document.getElementById("loadAuditLogs").onclick = () => loadPageData("auditLogs", { force: true });
     document.getElementById("loadUsers").onclick = () => {
       state.users.offset = 0;
       loadPageData("users", { force: true });
@@ -1084,7 +1139,24 @@
     document.getElementById("mockupName").addEventListener("keydown", submitOnEnter(saveMockupTemplate));
 
     showPage(routePage(), { skipLoad: true });
-    loadDefaultAdminData();
+    if (hasAdminSession()) { restoreAdminSession(); } else { showAdminLogin(); }
+
+
+    function toggleNavGroup(groupKey) {
+      const group = document.querySelector('[data-nav-group="' + groupKey + '"]');
+      if (!group) return;
+      const isOpen = group.classList.toggle("is-open");
+      group.querySelector(".nav-group-toggle").setAttribute("aria-expanded", String(isOpen));
+    }
+
+    function openNavGroupForPage(page) {
+      const groupKey = pageGroup[page];
+      document.querySelectorAll("[data-nav-group]").forEach((group) => {
+        const open = group.dataset.navGroup === groupKey;
+        group.classList.toggle("is-open", open);
+        group.querySelector(".nav-group-toggle").setAttribute("aria-expanded", String(open));
+      });
+    }
 
     function routePage() {
       const match = window.location.pathname.match(/^\/admin\/ui\/([^/]+)/);
@@ -1104,6 +1176,7 @@
       document.querySelectorAll("[data-page-link]").forEach((link) => {
         link.classList.toggle("active", link.dataset.pageLink === page);
       });
+      openNavGroupForPage(page);
       document.getElementById("pageTitle").textContent = pageMeta[page][0];
       document.getElementById("pageSubtitle").textContent = pageMeta[page][1];
       if (!options.skipLoad) {
@@ -1112,25 +1185,59 @@
       }
     }
 
-    function hasAdminToken() {
-      return Boolean(adminToken.value.trim() || localStorage.getItem(TOKEN_KEY));
+    function hasAdminSession() { return Boolean(localStorage.getItem(TOKEN_KEY)); }
+
+    function showAdminLogin(messageText = "") {
+      loginScreen.classList.remove("hidden");
+      document.getElementById("adminLoginMessage").textContent = messageText;
+      adminPassword.value = "";
+      adminPhone.focus();
     }
 
-    function saveAdminToken() {
-      const token = adminToken.value.trim();
-      if (!token) {
-        showError("请先填写 ADMIN_TOKEN");
-        return;
-      }
-      localStorage.setItem(TOKEN_KEY, token);
+    async function loginAdmin(event) {
+      event.preventDefault();
+      const loginMessage = document.getElementById("adminLoginMessage");
+      loginMessage.textContent = "正在登录...";
+      const response = await fetch("/admin/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: adminPhone.value.trim(), password: adminPassword.value }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.token) { loginMessage.textContent = data.message || "手机号或密码不正确"; return; }
+      localStorage.setItem(TOKEN_KEY, data.token);
+      adminPhoneLabel.textContent = data.admin?.phone || adminPhone.value.trim();
+      loginScreen.classList.add("hidden");
       loadedPages.clear();
       clearWarmupTimers();
-      setMessage("已保存管理员口令，正在加载当前页面");
+      await loadDefaultAdminData();
+    }
+
+    async function restoreAdminSession() {
+      const token = localStorage.getItem(TOKEN_KEY);
+      if (!token) { showAdminLogin(); return; }
+      try {
+        const response = await fetch("/admin/auth/session", { headers: { Authorization: `Bearer ${token}` } });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) { logoutAdmin(); return; }
+        adminPhoneLabel.textContent = data.admin?.phone || "管理员";
+        completeAdminLogin();
+      } catch {
+        showAdminLogin("无法验证管理员会话，请检查本地服务后重试");
+      }
+    }
+
+    function completeAdminLogin() {
+      adminPhoneLabel.textContent = "管理员";
+      loginScreen.classList.add("hidden");
       loadDefaultAdminData();
     }
 
+    function logoutAdmin() {
+      localStorage.removeItem(TOKEN_KEY);
+      loadedPages.clear();
+      clearWarmupTimers();
+      showAdminLogin("已退出登录");
+    }
+
     async function loadDefaultAdminData() {
-      if (!hasAdminToken()) return;
+      if (!hasAdminSession()) return;
       const page = routePage();
       clearWarmupTimers();
       setMessage(`正在加载${pageMeta[page][0]}`);
@@ -1144,19 +1251,22 @@
 
     function loadCurrentPage() {
       const page = routePage();
-      if (!hasAdminToken()) return;
+      if (!hasAdminSession()) return;
       return loadPageData(page, { force: true });
     }
 
     function loadPageData(page, options = {}) {
       const target = pageMeta[page] ? page : "overview";
-      if (!hasAdminToken()) return undefined;
+      if (!hasAdminSession()) return undefined;
       if (!options.force && loadedPages.has(target)) return Promise.resolve();
       const running = loadingPages.get(target);
       if (running && (options.silent || !running.silent)) return running.promise;
       const loaders = {
         overview: loadOverview,
         users: loadUsers,
+        roles: loadRoles,
+        features: loadFeatures,
+        auditLogs: loadAuditLogs,
         licenses: loadKeys,
         ai: loadAiSettings,
         imageRules: loadImageRules,
@@ -1187,7 +1297,7 @@
         .filter((page) => page !== "gallery")
         .forEach((page) => {
           const timer = window.setTimeout(() => {
-            if (!hasAdminToken() || routePage() === page) return;
+            if (!hasAdminSession() || routePage() === page) return;
             loadPageData(page, { silent: true }).catch(() => undefined);
           }, delay);
           warmupTimers.push(timer);
@@ -1269,10 +1379,83 @@
       });
     }
 
+
+    const ROLE_LABELS = {
+      member: "普通用户",
+      beta: "测试用户",
+      admin: "管理员",
+    };
+
+    function renderRoleChips(selectedRoles, attributes) {
+      const roles = new Set(selectedRoles || []);
+      return '<div class="role-chip-group">' + Object.entries(ROLE_LABELS).map(([role, label]) => '<label class="role-chip' + (roles.has(role) ? ' is-selected' : '') + '"><input type="checkbox" data-role-chip="' + role + '" ' + attributes + '="' + role + '"' + (roles.has(role) ? ' checked' : '') + '> ' + label + '</label>').join('') + '</div>';
+    }
+
+    function renderRoleBadges(roles) {
+      const values = Array.from(new Set((roles || []).filter(Boolean)));
+      return '<div class="role-badges">' + (values.length ? values : ['member']).map((role) => '<span class="role-badge">' + escapeHtml(ROLE_LABELS[role] || role) + '</span>').join('') + '</div>';
+    }
+
+    function bindRoleChipState(container) {
+      container.querySelectorAll('[data-role-chip]').forEach((input) => {
+        input.addEventListener('change', () => input.closest('.role-chip').classList.toggle('is-selected', input.checked));
+      });
+    }
+
+    async function loadRoles(options = {}) {
+      const data = await requestAdmin("/admin/users?limit=100&offset=0", { silent: options.silent });
+      const body = document.getElementById("rolesBody");
+      body.innerHTML = (data.users || []).map((user) => {
+        const roles = user.roles || [user.role];
+        return '<tr><td>' + escapeHtml(user.phone || "-") + '</td><td>' + escapeHtml(user.display_name || "-") + '</td><td>' + renderRoleChips(roles, 'data-role-user-id="' + escapeAttribute(user.id) + '" data-role-checkbox') + '</td><td><button class="primary" data-save-role-user-id="' + escapeAttribute(user.id) + '">保存</button></td></tr>';
+      }).join("") || emptyRow(4, "暂无用户");
+      bindRoleChipState(body);
+      body.querySelectorAll("[data-save-role-user-id]").forEach((button) => {
+        button.onclick = async () => {
+          const userId = button.dataset.saveRoleUserId;
+          const roles = Array.from(body.querySelectorAll('[data-role-user-id]')).filter((input) => input.dataset.roleUserId === userId && input.checked).map((input) => input.dataset.roleCheckbox);
+          if (roles.length === 0) {
+            showError("请至少选择一个角色");
+            return;
+          }
+          await requestAdmin('/admin/users/' + encodeURIComponent(userId) + '/role', { method: "PUT", body: JSON.stringify({ roles }) });
+          loadedPages.delete("users");
+          setMessage("角色已更新");
+          await loadRoles({ silent: true });
+        };
+      });
+      if (!options.silent) setMessage("用户角色已刷新");
+    }
+
+    async function loadFeatures(options = {}) {
+      const data = await requestAdmin("/admin/features", { silent: options.silent });
+      const body = document.getElementById("featuresBody");
+      body.innerHTML = (data.features || []).map((feature) => {
+        const roles = feature.default_roles || [];
+        return '<tr><td><div class="feature-name"><strong>' + escapeHtml(feature.label || feature.key) + '</strong><span class="feature-description">' + escapeHtml(feature.description || "") + '</span><span class="feature-key">' + escapeHtml(feature.key) + '</span></div></td><td>' + escapeHtml(feature.module || "未分组") + '</td><td>' + renderRoleChips(roles, 'data-feature-key="' + escapeAttribute(feature.key) + '" data-feature-role') + '</td><td>' + (feature.is_active ? "启用" : "停用") + '</td><td><button class="primary" data-save-feature-key="' + escapeAttribute(feature.key) + '">保存</button></td></tr>';
+      }).join("") || emptyRow(5, "暂无功能开关");
+      bindRoleChipState(body);
+      body.querySelectorAll("[data-save-feature-key]").forEach((button) => {
+        button.onclick = async () => {
+          const key = button.dataset.saveFeatureKey;
+          const defaultRoles = Array.from(body.querySelectorAll('[data-feature-key]')).filter((input) => input.dataset.featureKey === key && input.checked).map((input) => input.dataset.featureRole);
+          await requestAdmin('/admin/features/' + encodeURIComponent(key), { method: "PUT", body: JSON.stringify({ defaultRoles }) });
+          setMessage("功能默认角色已更新");
+          await loadFeatures({ silent: true });
+        };
+      });
+    }
+
+    async function loadAuditLogs(options = {}) {
+      const data = await requestAdmin("/admin/audit-logs?limit=100&offset=0", { silent: options.silent });
+      const body = document.getElementById("auditLogsBody");
+      body.innerHTML = (data.items || []).map((item) => '<tr><td>' + formatDate(item.created_at) + '</td><td>' + escapeHtml(item.action || "-") + '</td><td>' + escapeHtml(item.admin_phone || "-") + '</td><td>' + escapeHtml(item.target_phone || "-") + '</td><td>' + escapeHtml(item.feature_key || "-") + '</td><td>' + escapeHtml(item.new_value || "-") + '</td></tr>').join("") || emptyRow(6, "暂无操作日志");
+    }
+
     async function loadUsers(options = {}) {
       const body = document.getElementById("usersBody");
       if (!options.silent) {
-        body.innerHTML = emptyRow(9, "正在加载用户信息...");
+        body.innerHTML = emptyRow(10, "正在加载用户信息...");
         document.getElementById("usersSummary").textContent = "正在加载";
       }
       state.users.limit = Number(document.getElementById("usersLimit").value || 10);
@@ -1295,14 +1478,15 @@
 
     function renderUsers(users) {
       const body = document.getElementById("usersBody");
-      body.innerHTML = users.length ? "" : emptyRow(9, "暂无用户");
+      body.innerHTML = users.length ? "" : emptyRow(10, "暂无用户");
       users.forEach((user) => {
+        const roles = user.roles || [user.role];
         const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>
+        tr.innerHTML =                     `<td>
             <strong>${escapeHtml(user.phone || "")}</strong>
             <div class="muted">${escapeHtml(user.display_name || "-")}</div>
           </td>
+          <td>${renderRoleBadges(user.roles || [user.role])}</td>
           <td>${membershipBadge(user)}</td>
           <td>${formatDate(user.membership_expires_at)}</td>
           <td>
@@ -1319,23 +1503,23 @@
             ${formatDate(user.created_at)}
             <div class="muted">最后登录：${formatDate(user.last_login_at)}</div>
           </td>
-          <td>
-            ${formatDate(user.last_seen_at)}
-          </td>
+          <td>${formatDate(user.last_seen_at)}</td>
           <td>
             <div class="toolbar" style="margin-top:0">
-              ${user.deleted_at ? `<button class="secondary" data-restore-user-id="${escapeHtml(user.id)}">恢复用户</button>` : `<button class="danger" data-unbind-user-id="${escapeHtml(user.id)}">解绑设备</button><button class="danger" data-delete-user-id="${escapeHtml(user.id)}" ${user.role === "admin" ? "disabled" : ""}>删除用户</button>`}
+              ${user.deleted_at ? `<button class="secondary" data-restore-user-id="${escapeHtml(user.id)}">恢复用户</button>` : `<button class="danger" data-unbind-user-id="${escapeHtml(user.id)}">解绑设备</button><button class="danger" data-delete-user-id="${escapeHtml(user.id)}" ${roles.includes("admin") ? "disabled" : ""}>删除用户</button>`}
             </div>
-          </td>
-        `;
+          </td>`;
         tr.querySelector("[data-storage-user-id]").onclick = async () => {
           await updateUserStorageLimit(user);
         };
-        tr.querySelector("[data-unbind-user-id]").onclick = async () => {
-          await requestAdmin(`/admin/users/${encodeURIComponent(user.id)}/unbind-device`, { method: "POST" });
-          setMessage("设备已解绑");
-          await loadUsers();
-        };
+        const unbindButton = tr.querySelector("[data-unbind-user-id]");
+        if (unbindButton) {
+          unbindButton.onclick = async () => {
+            await requestAdmin(`/admin/users/${encodeURIComponent(user.id)}/unbind-device`, { method: "POST" });
+            setMessage("设备已解绑");
+            await loadUsers();
+          };
+        }
         const deleteButton = tr.querySelector("[data-delete-user-id]");
         if (deleteButton) {
           deleteButton.onclick = async () => {
@@ -2139,8 +2323,8 @@
     }
 
     async function requestAdmin(path, options = {}) {
-      const token = adminToken.value.trim() || localStorage.getItem(TOKEN_KEY) || "";
-      if (!token) throw showError("请先填写 ADMIN_TOKEN");
+      const token = localStorage.getItem(TOKEN_KEY) || "";
+      if (!token) { showAdminLogin("请先登录管理后台"); throw new Error("Administrator login is required"); }
       const silent = Boolean(options.silent);
       const json = options.json !== false;
       const { silent: _silent, json: _json, ...fetchOptions } = options;
@@ -2149,11 +2333,12 @@
           ...fetchOptions,
           headers: {
             ...(json ? { "Content-Type": "application/json" } : {}),
-            "x-admin-token": token,
+            Authorization: `Bearer ${token}`,
             ...(fetchOptions.headers || {}),
           },
         });
         const data = await response.json().catch(() => ({}));
+        if (response.status === 401) logoutAdmin();
         if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
         return data;
       } catch (error) {

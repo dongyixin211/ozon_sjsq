@@ -17,6 +17,9 @@ const expectedPages: PageKey[] = [
   'orders',
   'jobs',
   'license',
+  'adminUsers',
+  'adminFeatures',
+  'adminLogs',
 ];
 
 describe('workspaceModules', () => {
@@ -42,7 +45,7 @@ describe('workspaceModules', () => {
       },
       { key: 'listing', pages: ['ozon', 'autoListingPlans'] },
       { key: 'orders', pages: ['orders'] },
-      { key: 'tasks', pages: ['jobs', 'license'] },
+      { key: 'tasks', pages: ['jobs', 'license', 'adminUsers', 'adminFeatures', 'adminLogs'] },
     ]);
   });
 

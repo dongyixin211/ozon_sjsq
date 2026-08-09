@@ -5,6 +5,7 @@ import { api, defaultSettings } from "../lib/api";
 import { cloudAccountId, getCloudToken } from "../lib/cloudApi";
 import { checkLocalAssistant, checkLocalAssistantWithGracePeriod } from "../lib/localAssistant";
 import { WorkspaceModuleTabs } from "./WorkspaceModuleTabs";
+import { FeaturesProvider } from "../lib/featuresContext";
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
@@ -43,7 +44,11 @@ vi.mock("../lib/updater", () => ({
 }));
 
 vi.mock("../features/auth/AuthGate", () => ({
-  AuthGate: ({ children }: { children: React.ReactNode }) => children,
+  AuthGate: ({ children }: { children: React.ReactNode }) => (
+    <FeaturesProvider features={["*"]} userId="test-user" role="admin">
+      {children}
+    </FeaturesProvider>
+  ),
 }));
 
 vi.mock("../features/dashboard/DashboardPage", () => ({
@@ -68,7 +73,7 @@ afterEach(() => {
 
 describe("WorkspaceModuleTabs", () => {
   it("renders asset pages as accessible tabs and keeps the current page selected", () => {
-    render(<WorkspaceModuleTabs page="imagePending" onNavigate={vi.fn()} />);
+    render(<FeaturesProvider features={["*"]} userId="test-user" role="admin"><WorkspaceModuleTabs page="imagePending" onNavigate={vi.fn()} /></FeaturesProvider>);
 
     const tabs = screen.getByRole("tablist", { name: "素材页面" });
     expect(within(tabs).getAllByRole("tab")).toHaveLength(9);
@@ -78,7 +83,7 @@ describe("WorkspaceModuleTabs", () => {
 
   it("renders listing pages without the product catalog", () => {
     const onNavigate = vi.fn();
-    render(<WorkspaceModuleTabs page="ozon" onNavigate={onNavigate} />);
+    render(<FeaturesProvider features={["*"]} userId="test-user" role="admin"><WorkspaceModuleTabs page="ozon" onNavigate={onNavigate} /></FeaturesProvider>);
 
     const tabs = screen.getByRole("tablist", { name: "上架页面" });
     const listingTabs = within(tabs).getAllByRole("tab");
@@ -91,7 +96,7 @@ describe("WorkspaceModuleTabs", () => {
   });
 
   it("does not render tabs for a single-page module", () => {
-    render(<WorkspaceModuleTabs page="dashboard" onNavigate={vi.fn()} />);
+    render(<FeaturesProvider features={["*"]} userId="test-user" role="admin"><WorkspaceModuleTabs page="dashboard" onNavigate={vi.fn()} /></FeaturesProvider>);
 
     expect(screen.queryByRole("tablist")).toBeNull();
   });

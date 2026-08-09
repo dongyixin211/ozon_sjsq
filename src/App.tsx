@@ -35,8 +35,13 @@ import { AuthGate } from "./features/auth/AuthGate";
 import { checkDesktopUpdate, installDesktopUpdate } from "./lib/updater";
 import { WorkspaceModuleTabs } from "./workspace/WorkspaceModuleTabs";
 import { moduleForPage, workspaceModules, type PageKey, type WorkspaceModuleKey } from "./workspace/navigation";
+import { filterModulesByFeatures, canAccessPage } from "./workspace/featurePermissions";
+import { useFeatures } from "./lib/featuresContext";
 
 import { AutoListingPlansPage } from './features/cloud/AutoListingPlansPage';
+import { AdminUsersPage } from './features/admin/AdminUsersPage';
+import { AdminFeaturesPage } from './features/admin/AdminFeaturesPage';
+import { AdminLogsPage } from './features/admin/AdminLogsPage';
 
 const workspaceModuleIcons: Record<WorkspaceModuleKey, typeof Home> = {
   home: Home,
@@ -61,6 +66,20 @@ export function App() {
   const [assistant, setAssistant] = useState<LocalAssistantStatus>(ASSISTANT_CHECKING_STATUS);
   const [cloudAiSettings, setCloudAiSettings] = useState<AiSettingsPublic | null>(null);
   const [ozonHomeRequest, setOzonHomeRequest] = useState(0);
+
+  // RBAC: 根据用户功能权限过滤菜单
+  const { features } = useFeatures();
+  const visibleModules = useMemo(
+    () => filterModulesByFeatures(workspaceModules, features),
+    [features],
+  );
+
+  // 权限守卫: 如果当前页面不可访问，自动跳转到首页
+  useEffect(() => {
+    if (!canAccessPage(features, page)) {
+      setPage("dashboard");
+    }
+  }, [features, page]);
   const assistantProbeFailures = useRef(0);
   const assistantConnectionError = useRef("");
   const lastHealthyAssistant = useRef<LocalAssistantStatus>(ASSISTANT_CHECKING_STATUS);
@@ -240,7 +259,7 @@ export function App() {
         </div>
         <nav className="nav-list" aria-label="主模块">
           <div className="nav-list-main">
-            {workspaceModules.map((module) => {
+            {visibleModules.map((module) => {
               const Icon = workspaceModuleIcons[module.key];
               const active = module.key === currentModule.key;
               return (
@@ -349,6 +368,9 @@ export function App() {
         {page === "jobs" && <JobsPage jobs={jobs} selectedJobId={selectedJobId} cloudApiBaseUrl={settings.cloudApiBaseUrl} onChanged={refresh} />}
         {currentImageMode && settings && <CloudPage shops={shops} settings={settings} mode={currentImageMode} onNavigate={navigate} onChanged={refresh} />}
         {page === "license" && settings && <LicensePage settings={settings} />}
+        {page === "adminUsers" && settings && <AdminUsersPage settings={settings} />}
+        {page === "adminFeatures" && settings && <AdminFeaturesPage settings={settings} />}
+        {page === "adminLogs" && settings && <AdminLogsPage settings={settings} />}
       </main>
     </div>
   );

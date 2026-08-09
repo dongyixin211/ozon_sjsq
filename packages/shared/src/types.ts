@@ -160,11 +160,13 @@ export interface CloudUser {
   id: string;
   phone: string;
   displayName?: string | null;
-  role: "member" | "admin";
+  role: "member" | "beta" | "admin";
   membershipPlan?: string | null;
   membershipExpiresAt?: string | null;
   galleryStorageUsedBytes?: number;
   galleryStorageLimitBytes?: number;
+  /** 用户可访问的功能标识列表。admin 返回 ["*"]，beta 返回全部活跃功能，member 返回个人授权的功能 */
+  features?: string[];
 }
 
 export interface CloudAsset {

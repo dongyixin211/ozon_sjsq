@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json && node scripts/copy-public.mjs",
     "start": "node dist/index.js",
     "migrate": "tsx scripts/migrate.ts",
+    "admin:bootstrap": "tsx scripts/bootstrap-admin-account.ts",
     "smoke": "tsx scripts/smoke.ts",
     "perf:scan": "tsx scripts/perf-scan.ts",
     "perf:gallery": "tsx scripts/load-gallery-list.ts",
@@ -25,6 +26,9 @@
     "doctor": "tsx scripts/doctor.ts",
     "env:init": "tsx scripts/init-env.ts",
     "check": "tsc -p tsconfig.json --noEmit",
+    "db:setup": "bash ../scripts/setup-local-db.sh",
+    "db:sync": "bash ../scripts/sync-prod-db.sh",
+    "db:restore": "node ../scripts/restore-local-db.js",
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {

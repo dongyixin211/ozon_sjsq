@@ -1,11 +1,12 @@
 import bcrypt from "bcryptjs";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { planRules, type PlanCode } from "../config.js";
+import { config, planRules, type PlanCode } from "../config.js";
 import { requireAuth } from "../auth.js";
 import { pool, withTransaction } from "../db.js";
 import { AppError } from "../errors.js";
 import { createAuthToken, newId, sha256Hex, verifyAuthToken } from "../security.js";
+import { computeUserFeatures, invalidateFeatureFlagsCache } from "../feature-service.js";
 
 const registerSchema = z.object({
   phone: z.string().min(5).max(32),
@@ -40,12 +41,14 @@ export async function authRoutes(app: FastifyInstance) {
         throw new AppError(409, "PHONE_EXISTS", "手机号已注册，请直接登录");
       }
 
+      const role = body.phone === config.SUPER_ADMIN_PHONE ? "admin" : "member";
+
       await client.query(
         `
-        INSERT INTO users (id, phone, password_hash, display_name, last_login_at)
-        VALUES ($1, $2, $3, $4, now())
+        INSERT INTO users (id, phone, password_hash, display_name, role, last_login_at)
+        VALUES ($1, $2, $3, $4, $5, now())
         `,
-        [userId, body.phone, passwordHash, body.displayName ?? null],
+        [userId, body.phone, passwordHash, body.displayName ?? null, role],
       );
 
       const deviceId = await bindDevice(client, userId, deviceHash, body.deviceName);
@@ -70,6 +73,12 @@ export async function authRoutes(app: FastifyInstance) {
 
     const deviceHash = sha256Hex(body.deviceFingerprint);
     return withTransaction(async (client) => {
+      // 超级管理员存量回填：如果该手机号匹配但 role 还不是 admin，自动升级
+      if (body.phone === config.SUPER_ADMIN_PHONE && row.role !== "admin") {
+        await client.query("UPDATE users SET role = 'admin', updated_at = now() WHERE id = $1", [row.id]);
+        row.role = "admin";
+      }
+
       const deviceId = await bindDevice(client, row.id, deviceHash, body.deviceName);
       await recordUserLogin(client, row.id);
       const token = createAuthToken(row.id, deviceId);
@@ -80,7 +89,9 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   app.get("/me", { preHandler: requireAuth }, async (request) => {
-    return { ok: true, user: request.currentUser };
+    const user = request.currentUser!;
+    const features = await computeUserFeatures(user.id, user.roles);
+    return { ok: true, user, features };
   });
 
   app.post("/license/redeem", { preHandler: requireAuth }, async (request) => {

@@ -8,7 +8,7 @@ const envSchema = z.object({
   CORS_ORIGINS: z.string().optional().default(""),
   ADMIN_IP_ALLOWLIST: z.string().optional().default(""),
   JWT_SECRET: z.string().min(24, "JWT_SECRET must be at least 24 characters"),
-  ADMIN_TOKEN: z.string().min(12, "ADMIN_TOKEN must be at least 12 characters"),
+  SUPER_ADMIN_PHONE: z.string().min(5).max(32).default("18338062216"),
   DATABASE_URL: z.string().min(1),
   DB_POOL_MAX: z.coerce.number().int().positive().max(100).default(20),
   STORAGE_PROVIDER: z.string().default("r2"),

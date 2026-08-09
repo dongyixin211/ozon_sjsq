@@ -2,12 +2,19 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { config } from "./config.js";
 import { pool } from "./db.js";
 import { AppError } from "./errors.js";
-import { sha256Hex, verifyAuthToken } from "./security.js";
+import { sha256Hex, verifyAdminToken, verifyAuthToken } from "./security.js";
+
+export interface CurrentAdmin {
+  phone: string;
+  userId: string | null;
+  sessionId: string;
+}
 
 export interface CurrentUser {
   id: string;
   phone: string;
-  role: "member" | "admin";
+  role: "member" | "beta" | "admin";
+  roles: Array<"member" | "beta" | "admin">;
   deviceId: string;
   membershipPlan: string | null;
   membershipExpiresAt: string | null;
@@ -16,6 +23,7 @@ export interface CurrentUser {
 declare module "fastify" {
   interface FastifyRequest {
     currentUser?: CurrentUser;
+    currentAdmin?: CurrentAdmin;
   }
 }
 
@@ -36,8 +44,10 @@ export async function requireAuth(request: FastifyRequest, _reply: FastifyReply)
       u.role,
       u.membership_plan,
       u.membership_expires_at,
+      COALESCE(role_set.roles, ARRAY[u.role]) AS roles,
       d.id AS device_id
     FROM users u
+    LEFT JOIN LATERAL (SELECT array_agg(user_roles.role ORDER BY user_roles.role) AS roles FROM user_roles WHERE user_roles.user_id = u.id) role_set ON TRUE
     JOIN devices d ON d.id = $2 AND d.user_id = u.id AND d.revoked_at IS NULL
     JOIN user_sessions s ON s.user_id = u.id
       AND s.device_id = d.id
@@ -59,6 +69,7 @@ export async function requireAuth(request: FastifyRequest, _reply: FastifyReply)
     id: row.id,
     phone: row.phone,
     role: row.role,
+    roles: row.roles,
     deviceId: row.device_id,
     membershipPlan: row.membership_plan,
     membershipExpiresAt: row.membership_expires_at ? new Date(row.membership_expires_at).toISOString() : null,
@@ -80,13 +91,19 @@ export async function requireMembership(request: FastifyRequest) {
   }
 }
 
-export async function requireAdminToken(request: FastifyRequest) {
+export async function requireAdminSession(request: FastifyRequest, _reply: FastifyReply) {
   assertAdminIpAllowed(request);
-  const token = request.headers["x-admin-token"];
-  const value = Array.isArray(token) ? token[0] : token;
-  if (!value || value !== process.env.ADMIN_TOKEN) {
-    throw new AppError(401, "ADMIN_TOKEN_INVALID", "管理员口令不正确");
-  }
+  const header = request.headers.authorization ?? "";
+  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
+  if (!token) throw new AppError(401, "ADMIN_AUTH_REQUIRED", "Administrator login is required");
+  const payload = verifyAdminToken(token);
+  const result = await pool.query(
+    "SELECT account.phone, account.user_id FROM admin_accounts account JOIN admin_sessions session ON session.id = $2 AND session.admin_phone = account.phone AND session.token_jti_hash = $3 AND session.revoked_at IS NULL AND session.expires_at > now() WHERE account.phone = $1 AND account.is_active = TRUE LIMIT 1",
+    [payload.sub, payload.sessionId, sha256Hex(payload.jti)],
+  );
+  const row = result.rows[0];
+  if (!row) throw new AppError(401, "ADMIN_AUTH_EXPIRED", "Administrator session has expired");
+  request.currentAdmin = { phone: row.phone, userId: row.user_id ?? null, sessionId: payload.sessionId };
 }
 
 function assertAdminIpAllowed(request: FastifyRequest) {

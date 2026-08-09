@@ -43,7 +43,7 @@ export class CloudApiError extends Error {
 
 export interface CloudClient {
   health: () => Promise<{ ok: boolean; service: string; time: string }>;
-  me: () => Promise<{ ok: boolean; user: CloudUser }>;
+  me: () => Promise<{ ok: boolean; user: CloudUser; features: string[] }>;
   login: (input: LoginInput) => Promise<AuthResult>;
   register: (input: RegisterInput) => Promise<AuthResult>;
   redeemLicense: (licenseKey: string) => Promise<{ ok: boolean; membership: { plan: string; planLabel: string; expiresAt: string } }>;
@@ -95,6 +95,15 @@ export interface CloudClient {
   listProductCatalogCategories: () => Promise<{ ok: boolean; categories: ProductCatalogCategory[] }>;
   listProductCatalogProducts: (query?: ProductCatalogQuery) => Promise<ProductCatalogListResult>;
   getProductCatalogProduct: (id: string) => Promise<{ ok: boolean; product: ProductCatalogDetail }>;
+  // RBAC 管理接口（仅 admin 角色可调用）
+  adminListFeatures: () => Promise<AdminFeatureListResult>;
+  adminUpdateFeature: (featureKey: string, body: AdminFeatureUpdateInput) => Promise<{ ok: boolean; feature: AdminFeatureFlag }>;
+  adminListUsers: (query?: AdminUsersQuery) => Promise<AdminUsersListResult>;
+  adminUpdateUserRole: (userId: string, role: "member" | "beta" | "admin") => Promise<{ ok: boolean; user: { id: string; phone: string; role: string } }>;
+  adminGetUserFeatures: (userId: string) => Promise<AdminUserFeaturesResult>;
+  adminGrantUserFeature: (userId: string, featureKey: string, expiresAt?: string) => Promise<{ ok: boolean; access: AdminUserFeatureAccess }>;
+  adminRevokeUserFeature: (userId: string, featureKey: string) => Promise<{ ok: boolean; revoked: boolean }>;
+  adminListAuditLogs: (query?: AdminAuditLogsQuery) => Promise<AdminAuditLogsResult>;
 }
 
 export interface ProductCatalogStatus {
@@ -154,6 +163,106 @@ export interface ProductCatalogListResult {
   total: number;
   pageNo: number;
   pageSize: number;
+}
+
+// ============================================================
+// RBAC 管理接口类型
+// ============================================================
+
+export interface AdminFeatureFlag {
+  key: string;
+  label: string;
+  module: string;
+  description: string | null;
+  default_roles: string[];
+  is_active: boolean;
+  sort_order: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AdminFeatureListResult {
+  ok: boolean;
+  features: AdminFeatureFlag[];
+}
+
+export interface AdminFeatureUpdateInput {
+  defaultRoles?: ("member" | "beta" | "admin")[];
+  isActive?: boolean;
+}
+
+export interface AdminUserListItem {
+  id: string;
+  phone: string;
+  display_name: string | null;
+  role: string;
+  membership_plan: string | null;
+  membership_expires_at: string | null;
+  gallery_storage_limit_bytes: number | null;
+  last_login_at: string | null;
+  created_at: string;
+  device_name: string | null;
+  last_seen_at: string | null;
+  shop_count: number;
+  gallery_usage_count: number;
+  gallery_storage_used_bytes: string;
+}
+
+export interface AdminUsersQuery {
+  keyword?: string;
+  membership?: "all" | "active" | "expired" | "none";
+  deletionState?: "active" | "deleted" | "all";
+  limit?: number;
+  offset?: number;
+}
+
+export interface AdminUsersListResult {
+  ok: boolean;
+  items: AdminUserListItem[];
+  users: AdminUserListItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AdminUserFeatureAccess {
+  feature_key: string;
+  granted_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  label: string;
+  module: string;
+}
+
+export interface AdminUserFeaturesResult {
+  ok: boolean;
+  user: { id: string; phone: string; role: string };
+  access: AdminUserFeatureAccess[];
+}
+
+export interface AdminAuditLogItem {
+  id: string;
+  action: string;
+  feature_key: string | null;
+  old_value: string | null;
+  new_value: string | null;
+  created_at: string;
+  admin_phone: string | null;
+  target_phone: string | null;
+}
+
+export interface AdminAuditLogsQuery {
+  limit?: number;
+  offset?: number;
+  action?: "all" | "role_change" | "feature_grant" | "feature_revoke";
+}
+
+export interface AdminAuditLogsResult {
+  ok: boolean;
+  items: AdminAuditLogItem[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface LoginInput {
@@ -619,6 +728,46 @@ export function createCloudClient(baseUrl: string): CloudClient {
       return request(normalizedBaseUrl, `/product-catalog/products${suffix}`, { auth: true });
     },
     getProductCatalogProduct: (id) => request(normalizedBaseUrl, `/product-catalog/products/${encodeURIComponent(id)}`, { auth: true }),
+    // RBAC 管理接口
+    adminListFeatures: () => request(normalizedBaseUrl, "/admin/features", { auth: true }),
+    adminUpdateFeature: (featureKey, body) => request(normalizedBaseUrl, `/admin/features/${encodeURIComponent(featureKey)}`, {
+      method: "PUT",
+      auth: true,
+      body,
+    }),
+    adminListUsers: (query = {}) => {
+      const params = new URLSearchParams();
+      if (query.keyword) params.set("keyword", query.keyword);
+      if (query.membership) params.set("membership", query.membership);
+      if (query.deletionState) params.set("deletionState", query.deletionState);
+      if (query.limit) params.set("limit", String(query.limit));
+      if (query.offset) params.set("offset", String(query.offset));
+      const suffix = params.toString();
+      return request(normalizedBaseUrl, `/admin/users${suffix ? `?${suffix}` : ""}`, { auth: true, timeoutMs: 30_000 });
+    },
+    adminUpdateUserRole: (userId, role) => request(normalizedBaseUrl, `/admin/users/${encodeURIComponent(userId)}/role`, {
+      method: "PUT",
+      auth: true,
+      body: { role },
+    }),
+    adminGetUserFeatures: (userId) => request(normalizedBaseUrl, `/admin/users/${encodeURIComponent(userId)}/features`, { auth: true }),
+    adminGrantUserFeature: (userId, featureKey, expiresAt) => request(normalizedBaseUrl, `/admin/users/${encodeURIComponent(userId)}/features`, {
+      method: "POST",
+      auth: true,
+      body: { featureKey, expiresAt },
+    }),
+    adminRevokeUserFeature: (userId, featureKey) => request(normalizedBaseUrl, `/admin/users/${encodeURIComponent(userId)}/features/${encodeURIComponent(featureKey)}`, {
+      method: "DELETE",
+      auth: true,
+    }),
+    adminListAuditLogs: (query = {}) => {
+      const params = new URLSearchParams();
+      if (query.limit) params.set("limit", String(query.limit));
+      if (query.offset) params.set("offset", String(query.offset));
+      if (query.action) params.set("action", query.action);
+      const suffix = params.toString();
+      return request(normalizedBaseUrl, `/admin/audit-logs${suffix ? `?${suffix}` : ""}`, { auth: true, timeoutMs: 30_000 });
+    },
     listAssets: async (query) => validateGalleryListResult(query.excludeAssetIds?.length
       ? await request(normalizedBaseUrl, "/gallery/assets/query", { method: "POST", auth: true, body: query })
       : await request(normalizedBaseUrl, `/gallery/assets${galleryQueryString(query)}`, { auth: true })),

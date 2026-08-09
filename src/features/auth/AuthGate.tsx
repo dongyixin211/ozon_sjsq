@@ -19,6 +19,7 @@ import {
   isMembershipRequired,
   setCloudToken,
 } from "../../lib/cloudApi";
+import { FeaturesProvider } from "../../lib/featuresContext";
 
 interface Props {
   settings: AppSettings;
@@ -39,6 +40,7 @@ export function AuthGate({ settings, children }: Props) {
   const [mode, setMode] = useState<AuthMode>("login");
   const [state, setState] = useState<GateState>("checking");
   const [user, setUser] = useState<CloudUser | null>(null);
+  const [features, setFeatures] = useState<string[]>([]);
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [licenseKey, setLicenseKey] = useState("");
@@ -77,6 +79,7 @@ export function AuthGate({ settings, children }: Props) {
     try {
       const result = await client.me();
       silentAuthFailureCountRef.current = 0;
+      setFeatures(result.features ?? []);
       setCurrentUser(result.user);
       setGateState(hasActiveMembership(result.user) ? "active" : "expired");
       setMessage("");
@@ -219,7 +222,11 @@ export function AuthGate({ settings, children }: Props) {
   };
 
   if (state === "active") {
-    return <CloudSyncGate settings={settings} userId={user?.id ?? ""}>{children}</CloudSyncGate>;
+    return (
+      <FeaturesProvider features={features} userId={user?.id ?? null} role={user?.role ?? null}>
+        <CloudSyncGate settings={settings} userId={user?.id ?? ""}>{children}</CloudSyncGate>
+      </FeaturesProvider>
+    );
   }
 
   return (

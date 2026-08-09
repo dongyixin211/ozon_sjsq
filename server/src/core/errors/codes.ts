@@ -1,0 +1,34 @@
+/**
+ * core/errors/codes.ts — 错误码枚举
+ *
+ * 集中管理所有 API 错误码，避免字符串散落各处。
+ */
+
+export const ErrorCode = {
+  // 认证 4xx
+  UNAUTHORIZED: "UNAUTHORIZED",
+  TOKEN_EXPIRED: "TOKEN_EXPIRED",
+  TOKEN_INVALID: "TOKEN_INVALID",
+  FORBIDDEN: "FORBIDDEN",
+  ADMIN_REQUIRED: "ADMIN_REQUIRED",
+
+  // 资源 4xx
+  NOT_FOUND: "NOT_FOUND",
+  USER_NOT_FOUND: "USER_NOT_FOUND",
+  FEATURE_NOT_FOUND: "FEATURE_NOT_FOUND",
+  ASSET_NOT_FOUND: "ASSET_NOT_FOUND",
+  CONFLICT: "CONFLICT",
+  VALIDATION_ERROR: "VALIDATION_ERROR",
+
+  // 配额 4xx
+  QUOTA_EXCEEDED: "QUOTA_EXCEEDED",
+  RATE_LIMITED: "RATE_LIMITED",
+
+  // 服务器 5xx
+  INTERNAL_ERROR: "INTERNAL_ERROR",
+  DATABASE_NOT_READY: "DATABASE_NOT_READY",
+  STORAGE_ERROR: "STORAGE_ERROR",
+  AI_SERVICE_ERROR: "AI_SERVICE_ERROR",
+} as const;
+
+export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];

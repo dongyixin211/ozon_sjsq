@@ -1,0 +1,820 @@
+/* ==========================================================================
+   layout-fix.css — 排版与管理端优化覆盖层
+   导入顺序：在 styles.css 之后引入，利用 CSS 层叠优先级覆盖冲突值
+   策略：不改动原 6493 行 styles.css，用此文件统一令牌、修复层级、
+         优化间距、表格响应式、加载/空状态，零破坏性改动
+   ========================================================================== */
+
+/* ==========================================================================
+   1. 统一设计令牌 — 消除 4 个冲突的 :root 块
+   原文件第 1、4049、5280 行各有一个 :root，值互相冲突
+   此块在层叠中最后生效，成为唯一真相源
+   ========================================================================== */
+:root {
+  /* 字体 — 移除未加载的 Inter / Segoe UI，使用系统原生中文字体 */
+  font-family: "PingFang SC", "Microsoft YaHei UI", "HarmonyOS Sans SC",
+    "Noto Sans SC", system-ui, -apple-system, sans-serif;
+  font-size: 14px; /* 13px -> 14px，中文可读性提升 */
+  line-height: 1.6;
+  color: #1a2332;
+  background: #eef2f7;
+
+  /* 主色 — 统一为 #2563eb（原文件第 2/3 块的值，也是最终生效值） */
+  --color-primary: #2563eb;
+  --color-primary-strong: #1d4ed8;
+  --color-primary-soft: #eff6ff;
+
+  /* 文本 */
+  --color-text: #1a2332;
+  --color-text-heading: #0f172a;
+  --color-muted: #64748b;
+  --color-subtle: #94a3b8;
+
+  /* 边框 */
+  --color-border: #e2e8f0;
+  --color-border-strong: #cbd5e1;
+
+  /* 背景 */
+  --color-bg: #eef2f7;
+  --color-surface: #ffffff;
+  --color-surface-soft: #f8fafc;
+
+  /* 语义色 */
+  --color-success: #15803d;
+  --color-success-soft: #f0fdf4;
+  --color-warning: #b45309;
+  --color-warning-soft: #fffbeb;
+  --color-danger: #dc2626;
+  --color-danger-soft: #fef2f2;
+  --color-info: #2563eb;
+  --color-info-soft: #eff6ff;
+
+  /* 间距 — 统一 4px 基准，8 级刻度 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* 圆角 */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-pill: 999px;
+
+  /* 阴影 */
+  --shadow-panel: 0 1px 3px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.04);
+  --shadow-panel-hover: 0 2px 8px rgba(15, 23, 42, 0.08), 0 8px 24px rgba(15, 23, 42, 0.06);
+  --shadow-dialog: 0 8px 32px rgba(15, 23, 42, 0.12), 0 24px 64px rgba(15, 23, 42, 0.16);
+
+  /* 字号层级 — 6 级清晰体系，替代原 17 种零散值 */
+  --fs-display: 26px;   /* 页面标题 */
+  --fs-h1: 22px;        /* 区块大标题 */
+  --fs-h2: 17px;        /* 面板标题 */
+  --fs-h3: 15px;        /* 小标题 / 表头 */
+  --fs-body: 14px;      /* 正文（= base） */
+  --fs-caption: 13px;   /* 辅助说明 */
+  --fs-micro: 12px;     /* 标签 / 时间戳 */
+
+  /* 行高 */
+  --lh-tight: 1.25;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.65;
+
+  /* 字重 */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  /* 布局 */
+  --sidebar-width: 240px;
+  --sidebar-width-narrow: 200px;
+  --topbar-height: 64px;
+  --content-max-width: 1600px;
+
+  /* 动画 */
+  --transition-fast: 120ms ease;
+  --transition-normal: 200ms ease;
+}
+
+/* ==========================================================================
+   2. 字体层级修复 — h1/h2/h3 建立清晰区分
+   原文件 h3=13px=正文字号，无法区分层级
+   ========================================================================== */
+h1 {
+  font-size: var(--fs-h1);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.02em;
+  color: var(--color-text-heading);
+}
+
+h2 {
+  font-size: var(--fs-h2);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.015em;
+  color: var(--color-text-heading);
+}
+
+h3 {
+  font-size: var(--fs-h3);
+  line-height: var(--lh-normal);
+  font-weight: var(--fw-medium);
+  color: var(--color-text-heading);
+}
+
+/* topbar 标题用 display 级别 */
+.topbar h1 {
+  font-size: var(--fs-display);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+/* 面板标题统一 */
+.panel-header h2,
+.panel-header h3,
+.order-screen-head h2 {
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-semibold);
+  color: var(--color-text-heading);
+}
+
+/* 辅助文字 */
+.muted {
+  color: var(--color-muted);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-relaxed);
+}
+
+.eyebrow {
+  color: var(--color-subtle);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.04em;
+}
+
+/* 品牌名称 */
+.brand strong {
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+.brand span {
+  font-size: var(--fs-micro);
+  color: var(--color-muted);
+}
+
+/* 统一按钮字号 */
+button,
+input,
+select,
+textarea {
+  font-size: var(--fs-body);
+}
+
+/* 表格内字号收窄 */
+table th {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-medium);
+}
+
+table td {
+  font-size: var(--fs-body);
+}
+
+/* ==========================================================================
+   3. 间距统一 — panel / sidebar / main 使用一致的间距变量
+   原文件 panel padding 被覆盖 3 次: 14px -> 18px -> 20px
+   ========================================================================== */
+.panel {
+  padding: var(--space-5);
+}
+
+.panel-header {
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.sidebar {
+  padding: var(--space-4) var(--space-3);
+  width: var(--sidebar-width);
+}
+
+.app-shell {
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+}
+
+.main {
+  padding: var(--space-5) var(--space-6) var(--space-8);
+  max-width: var(--content-max-width);
+}
+
+/* 顶栏间距 */
+.topbar {
+  min-height: var(--topbar-height);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+}
+
+/* 导航间距 */
+.nav-list {
+  gap: var(--space-1);
+}
+
+.nav-list-main {
+  gap: var(--space-1);
+}
+
+.nav-item {
+  min-height: 40px;
+  padding: 0 var(--space-3);
+  gap: var(--space-2);
+  font-size: var(--fs-body);
+  border-radius: var(--radius-sm);
+}
+
+.nav-child {
+  min-height: 36px;
+  padding-left: var(--space-3);
+  font-size: var(--fs-caption);
+}
+
+/* 工具栏间距 */
+.toolbar,
+.actions,
+.topbar-actions {
+  gap: var(--space-2);
+}
+
+/* 内容网格 */
+.content-grid,
+.dashboard-page {
+  gap: var(--space-4);
+}
+
+/* ==========================================================================
+   4. 表格响应式 — 移除固定 min-width，改用自适应
+   原文件 7+ 个表格有 600-1380px 的固定 min-width
+   ========================================================================== */
+
+/* 移除所有表格的固定最小宽度 */
+.gallery-list-table,
+.pending-list-table,
+.processing-list-table,
+.order-table,
+.shop-table,
+.dashboard-store-table-wrap table,
+table {
+  min-width: 0;
+}
+
+/* 表格容器统一横向滚动 */
+.table-wrap,
+.order-table-wrap,
+.gallery-list-wrap,
+.shop-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 表格本身设置最小宽度但在容器内滚动，而非撑破布局 */
+.gallery-list-table { min-width: 880px; }
+.pending-list-table { min-width: 760px; }
+.processing-list-table { min-width: 960px; }
+.order-table { min-width: 1000px; }
+.shop-table { min-width: 760px; }
+
+/* 表头粘性 + 背景防穿透 */
+table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-surface-soft);
+  text-align: left;
+  white-space: nowrap;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-strong);
+}
+
+table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+}
+
+/* 行 hover 反馈 */
+table tbody tr {
+  transition: background var(--transition-fast);
+}
+
+table tbody tr:hover {
+  background: var(--color-surface-soft);
+}
+
+/* ==========================================================================
+   5. 响应式断点统一 — 消除 4 个冲突的 @media(max-width:900px) 块
+   保留一套清晰的 3 断点体系
+   ========================================================================== */
+
+/* 中等屏 — 侧边栏收窄 */
+@media (max-width: 1280px) {
+  :root {
+    --sidebar-width: var(--sidebar-width-narrow);
+  }
+  .main {
+    padding-inline: var(--space-5);
+  }
+}
+
+/* 平板 — 侧边栏折叠为顶部横向导航 */
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    height: auto;
+    width: 100%;
+    padding: var(--space-2);
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+  }
+
+  .brand {
+    min-height: 44px;
+    margin: 0 0 var(--space-2);
+    padding: 0 var(--space-2);
+    border: 0;
+  }
+
+  .brand svg {
+    width: 28px;
+    height: 28px;
+  }
+
+  .nav-list {
+    min-height: 0;
+    overflow-x: auto;
+  }
+
+  .nav-list-main {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(110px, 1fr);
+  }
+
+  .nav-item {
+    min-height: 38px;
+    justify-content: center;
+    white-space: nowrap;
+  }
+
+  .nav-item.active {
+    box-shadow: inset 0 -3px 0 var(--color-primary);
+  }
+
+  .main {
+    padding: var(--space-3);
+    height: auto;
+    overflow: visible;
+  }
+
+  .topbar {
+    position: static;
+    align-items: flex-start;
+    flex-direction: column;
+    margin: 0 0 var(--space-3);
+    padding: var(--space-3);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    backdrop-filter: none;
+    min-height: 0;
+  }
+
+  .topbar h1 {
+    font-size: var(--fs-h1);
+  }
+
+  .topbar-actions {
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    flex-wrap: nowrap;
+  }
+
+  .panel {
+    padding: var(--space-4);
+  }
+
+  .panel-header,
+  .order-screen-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* 表格在窄屏下使用卡片式布局降级 */
+  .table-wrap,
+  .order-table-wrap,
+  .gallery-list-wrap {
+    margin-inline: calc(var(--space-3) * -1);
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
+}
+
+/* 手机 — 极小屏优化 */
+@media (max-width: 480px) {
+  :root {
+    font-size: 13px;
+  }
+
+  .sidebar {
+    padding: var(--space-1);
+  }
+
+  .brand strong {
+    font-size: var(--fs-h3);
+  }
+
+  .brand span {
+    display: none;
+  }
+
+  .nav-list-main {
+    grid-auto-columns: minmax(96px, 1fr);
+    gap: var(--space-1);
+  }
+
+  .nav-item {
+    gap: var(--space-1);
+    padding-inline: var(--space-2);
+    font-size: var(--fs-caption);
+  }
+
+  .main {
+    padding: var(--space-2);
+  }
+
+  .topbar {
+    gap: var(--space-2);
+    padding: var(--space-3);
+  }
+
+  .panel {
+    padding: var(--space-3);
+  }
+
+  .panel-header,
+  .order-screen-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .toolbar {
+    align-items: stretch;
+  }
+
+  .modal-backdrop {
+    padding: var(--space-2);
+  }
+
+  .modal-panel {
+    padding: var(--space-3);
+  }
+}
+
+/* ==========================================================================
+   6. 色彩一致性 — 统一硬编码色值到变量
+   原文件有 200+ 独立硬编码色值，此处统一关键选择器
+   ========================================================================== */
+
+/* 文本色统一 */
+.brand strong,
+.auth-brand strong,
+.assistant-status-header h1,
+.topbar h1,
+.order-screen-head h2,
+.panel-header h2,
+.panel-header h3 {
+  color: var(--color-text-heading);
+}
+
+/* 导航文字 */
+.nav-item {
+  color: var(--color-muted);
+}
+
+.nav-item:hover {
+  color: var(--color-primary-strong);
+  background: var(--color-primary-soft);
+}
+
+.nav-item.active {
+  color: var(--color-primary-strong);
+  background: var(--color-primary-soft);
+  font-weight: var(--fw-medium);
+}
+
+/* 面板背景统一 */
+.panel,
+.order-metric-card,
+.order-shop-card,
+.status-block,
+.workflow-card,
+.check-card,
+.guide-card,
+.operation-card,
+.mini-panel,
+.cloud-asset-card,
+.shop-card,
+.task-nav-item,
+.modal-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+}
+
+/* 顶栏背景 */
+.topbar {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* 状态徽章统一 */
+.status-pill,
+.badge {
+  min-height: 28px;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--space-3);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-medium);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.badge:not(.neutral):not(.warn):not(.danger):not(.info) {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+.badge.neutral {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.badge.warn {
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+
+.badge.danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.badge.info {
+  background: var(--color-info-soft);
+  color: var(--color-info);
+}
+
+/* ==========================================================================
+   7. 焦点态与可访问性
+   原文件有 focus-visible 但 outline 偏弱
+   ========================================================================== */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="tab"]:focus-visible,
+.nav-item:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* 移除 !important 依赖 — 用更高特异性替代 */
+.gallery-media-label {
+  color: #ffffff;
+  font-size: var(--fs-micro);
+}
+
+.warn-text {
+  color: var(--color-warning);
+}
+
+.mockup-template-status {
+  color: var(--color-primary);
+}
+
+.mockup-inline-action {
+  color: var(--color-primary);
+  font-size: var(--fs-caption);
+}
+
+/* ==========================================================================
+   8. 加载状态骨架屏 — 统一加载体验
+   原文件各页面自行处理 loading，无统一骨架屏
+   ========================================================================== */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-soft) 25%,
+    #eef2f7 50%,
+    var(--color-surface-soft) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s infinite;
+  border-radius: var(--radius-xs);
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.skeleton-line {
+  height: 14px;
+  margin-bottom: var(--space-2);
+  border-radius: var(--radius-xs);
+}
+
+.skeleton-line:last-child {
+  margin-bottom: 0;
+  width: 60%;
+}
+
+/* ==========================================================================
+   9. 空状态统一样式
+   原文件有 .log-empty / .empty-shop-state / .mockup-detail-empty 零散处理
+   ========================================================================== */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--color-muted);
+}
+
+.empty-state-icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: var(--space-3);
+  color: var(--color-subtle);
+}
+
+.empty-state-title {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-medium);
+  color: var(--color-text);
+  margin-bottom: var(--space-1);
+}
+
+.empty-state-desc {
+  font-size: var(--fs-caption);
+  color: var(--color-muted);
+  line-height: var(--lh-relaxed);
+}
+
+/* 统一已有的零散空状态 */
+.log-empty,
+.empty-shop-state,
+.mockup-detail-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--color-muted);
+  font-size: var(--fs-caption);
+}
+
+/* ==========================================================================
+   10. 面板 hover 与交互微反馈
+   ========================================================================== */
+.panel {
+  transition: box-shadow var(--transition-normal), border-color var(--transition-normal);
+}
+
+.shop-card:hover,
+.task-nav-item:hover,
+.cloud-asset-card:hover {
+  box-shadow: var(--shadow-panel-hover);
+  border-color: var(--color-border-strong);
+}
+
+/* 按钮过渡 */
+button:not(:disabled) {
+  transition: background var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast), box-shadow var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+/* 输入框焦点增强 */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+/* ==========================================================================
+   11. 桌面端滚动优化
+   原文件 body overflow:hidden + .main overflow:auto 在桌面端生效
+   ========================================================================== */
+@media (min-width: 901px) {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    overflow: hidden;
+  }
+
+  .app-shell {
+    height: 100vh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .main {
+    height: 100vh;
+    max-width: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  /* 自定义滚动条 — 替代默认粗滚动条 */
+  .main::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .main::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .main::-webkit-scrollbar-thumb {
+    background: var(--color-border-strong);
+    border-radius: var(--radius-pill);
+  }
+
+  .main::-webkit-scrollbar-thumb:hover {
+    background: var(--color-muted);
+  }
+
+  /* 表格容器滚动条 */
+  .table-wrap::-webkit-scrollbar,
+  .order-table-wrap::-webkit-scrollbar,
+  .gallery-list-wrap::-webkit-scrollbar,
+  .shop-table-wrap::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  .table-wrap::-webkit-scrollbar-thumb,
+  .order-table-wrap::-webkit-scrollbar-thumb,
+  .gallery-list-wrap::-webkit-scrollbar-thumb,
+  .shop-table-wrap::-webkit-scrollbar-thumb {
+    background: var(--color-border-strong);
+    border-radius: var(--radius-pill);
+  }
+}
+
+/* ==========================================================================
+   12. prefers-reduced-motion 无障碍
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .skeleton {
+    animation: none;
+    background: var(--color-surface-soft);
+  }
+}

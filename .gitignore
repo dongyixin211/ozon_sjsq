@@ -8,6 +8,7 @@ target/
 .env
 server/.env
 server/reports/
+local/
 src-tauri/target/
 fixtures/output/
 .worktrees/
