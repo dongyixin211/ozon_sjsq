@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from 'react';
 import type { AppSettings, CategoryOption, FollowAutomationRequest, JobSummary, ListingMaintenanceActionConfig, ListingMaintenanceRequest, OrderPostingRow, OzonProductRow, PreflightIssue, ProductAnalyticsRow, Shop, ShopDraft, TemplateSummary, WarehouseOption } from "@shared/types";
 import { api } from "../../lib/api";
 import { PathInput } from "../../lib/PathInput";
@@ -15,6 +16,7 @@ interface Props {
   homeRequest?: number;
   onChanged: () => void;
   onNavigate: (page: "ozon" | "jobs") => void;
+  onHeaderChange?: (content: ReactNode | null) => void;
 }
 
 type TabKey = "upload" | "update" | "orders" | "follow" | "inventory" | "analytics" | "api";
@@ -306,7 +308,7 @@ function restoreNonNegativeInt(value: unknown, fallback: number) {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
 }
 
-export function OzonPage({ shops, jobs = [], settings, homeRequest = 0, onChanged, onNavigate }: Props) {
+export function OzonPage({ shops, jobs = [], settings, homeRequest = 0, onChanged, onNavigate, onHeaderChange }: Props) {
   const savedOrderDraft = readOrderDocumentsDraft();
   const savedUpdateDraft = readListedUpdateDraft();
   const savedFollowDraft = readFollowAutomationDraft();
@@ -1671,6 +1673,17 @@ export function OzonPage({ shops, jobs = [], settings, homeRequest = 0, onChange
   ];
   const activeTask = TASK_TABS.find((item) => item.key === tab) ?? TASK_TABS[0];
 
+  useEffect(() => {
+    onHeaderChange?.(
+      <div className="ozon-topbar-context">
+        <strong className="ozon-topbar-shop-name">{currentShop?.name || "未选择店铺"}</strong>
+        <TaskNavigation activeTab={tab} onSelect={setTab} />
+      </div>,
+    );
+  }, [currentShop?.id, currentShop?.name, onHeaderChange, tab]);
+
+  useEffect(() => () => onHeaderChange?.(null), [onHeaderChange]);
+
   if (!shopCenterOpen) {
     return (
       <div className="content-grid">
@@ -2445,7 +2458,7 @@ function TaskNavigation(props: {
   onSelect: (tab: TabKey) => void;
 }) {
   return (
-    <div className="task-nav" aria-label="Ozon 任务导航">
+    <div className="task-nav shop-function-menu" role="navigation" aria-label="Ozon 任务导航">
       {TASK_TABS.map((item) => (
         <button
           key={item.key}
@@ -2453,7 +2466,6 @@ function TaskNavigation(props: {
           onClick={() => props.onSelect(item.key)}
         >
           <strong>{item.label}</strong>
-          <span>{item.description}</span>
         </button>
       ))}
     </div>
@@ -2474,7 +2486,7 @@ function ShopMaintenanceHomePanel(props: {
   const running = Boolean(props.runningJob);
   const runnableShopCount = props.shops.filter((shop) => shop.enabled && isListingMaintenanceEnabledForShop(shop)).length;
   return (
-    <section className="panel">
+    <section className="panel shop-maintenance-command-bar">
       <div className="panel-header">
         <div>
           <h2>定时运维</h2>
@@ -2544,7 +2556,7 @@ function ShopManagementPanel(props: {
 
   return (
     <>
-      <section className="panel shop-manager-filter">
+      <section className="panel shop-manager-filter shop-manager-command-bar">
         <div className="panel-header">
           <div>
             <h2>店铺管理</h2>

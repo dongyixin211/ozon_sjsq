@@ -429,7 +429,7 @@ const legacyListingPresignSchema = z.object({
   sku: z.string().trim().min(1).max(240),
   filename: z.string().trim().min(1).max(240),
   contentType: z.enum(["image/jpeg", "image/png", "image/webp"]),
-  sizeBytes: z.coerce.number().int().positive().max(MAX_BATCH_UPLOAD_BYTES),
+  sizeBytes: z.coerce.number().int().positive(),
 });
 const legacyListingCompleteSchema = z
   .object({ objectKey: z.string().trim().min(1).max(600) })
@@ -454,21 +454,7 @@ function parseLegacyListingCompleteBody(body) {
 }
 __name(parseLegacyListingCompleteBody, "parseLegacyListingCompleteBody");
 __name2(parseLegacyListingCompleteBody, "parseLegacyListingCompleteBody");
-function legacyListingStorageLimitBytes(env = process.env) {
-  const configuredGb = Number(env.LEGACY_LISTING_STORAGE_LIMIT_GB);
-  const limitGb = Number.isFinite(configuredGb) && configuredGb > 0 ? configuredGb : 50;
-  return Math.floor(limitGb * 1024 ** 3);
-}
-__name(legacyListingStorageLimitBytes, "legacyListingStorageLimitBytes");
-__name2(legacyListingStorageLimitBytes, "legacyListingStorageLimitBytes");
-function legacyListingStorageUsageTotals(input) {
-  return {
-    usedBytes: input.confirmedLegacyBytes + input.reservedLegacyBytes,
-  };
-}
-__name(legacyListingStorageUsageTotals, "legacyListingStorageUsageTotals");
-__name2(legacyListingStorageUsageTotals, "legacyListingStorageUsageTotals");
-function validateLegacyListingUploadQuota(usage, incomingBytes) {
+function validateGalleryStorageQuota(usage, incomingBytes) {
   if (
     incomingBytes <= 0 ||
     usage.limitBytes <= 0 ||
@@ -478,8 +464,6 @@ function validateLegacyListingUploadQuota(usage, incomingBytes) {
   }
   return { ok: false, code: "GALLERY_STORAGE_LIMIT_EXCEEDED" };
 }
-__name(validateLegacyListingUploadQuota, "validateLegacyListingUploadQuota");
-__name2(validateLegacyListingUploadQuota, "validateLegacyListingUploadQuota");
 function validateLegacyListingUploadGrant(userId, grant, now = new Date()) {
   if (!grant) {
     return {
@@ -1759,14 +1743,6 @@ async function galleryRoutes(app) {
     "/legacy-listing/uploads/presign",
     { preHandler: [requireAuth, requireMembership] },
     async (request) => {
-      await assertRateLimit({
-        key: `legacy-listing:presign:${request.currentUser.id}`,
-        limit: 240,
-        windowMs: 6e4,
-        code: "LEGACY_LISTING_UPLOAD_RATE_LIMITED",
-        message:
-          "\u672C\u5730\u4E0A\u67B6\u56FE\u7247\u4E0A\u4F20\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5",
-      });
       const body = legacyListingPresignSchema.parse(request.body);
       const grantId = newId();
       const objectKey = buildLegacyListingUploadObjectKey(
@@ -1787,11 +1763,6 @@ async function galleryRoutes(app) {
             "\u7528\u6237\u4E0D\u5B58\u5728",
           );
         }
-        await assertLegacyListingStorageAvailable(
-          request.currentUser.id,
-          body.sizeBytes,
-          client,
-        );
         const { uploadUrl, expiresIn } = await createDirectUploadUrl(
           objectKey,
           body.contentType,
@@ -2587,30 +2558,12 @@ async function assertGalleryStorageAvailable(
     return;
   }
   const usage = await readGalleryStorageUsage(userId, queryable);
-  const quota = validateLegacyListingUploadQuota(usage, incomingBytes);
+  const quota = validateGalleryStorageQuota(usage, incomingBytes);
   if (!quota.ok) {
     throw new AppError(
       507,
       "GALLERY_STORAGE_LIMIT_EXCEEDED",
       `\u666e\u901a\u56fe\u5E93\u7A7A\u95F4\u4E0D\u8DB3\uFF1A\u5F53\u524D\u5DF2\u4F7F\u7528 ${formatStorageBytes(usage.usedBytes)}\uFF0C\u672C\u6B21\u9700\u8981 ${formatStorageBytes(incomingBytes)}\uFF0C\u666E\u901A\u56FE\u5E93\u989D\u5EA6 ${formatStorageBytes(usage.limitBytes)}`,
-    );
-  }
-}
-async function assertLegacyListingStorageAvailable(
-  userId,
-  incomingBytes,
-  queryable = pool,
-) {
-  if (incomingBytes <= 0) {
-    return;
-  }
-  const usage = await readLegacyListingStorageUsage(userId, queryable);
-  const quota = validateLegacyListingUploadQuota(usage, incomingBytes);
-  if (!quota.ok) {
-    throw new AppError(
-      507,
-      "GALLERY_STORAGE_LIMIT_EXCEEDED",
-      `\u4E34\u65F6\u4E0A\u67B6\u56FE\u7247\u7A7A\u95F4\u4E0D\u8DB3\uFF1A\u5F53\u524D\u5DF2\u4F7F\u7528 ${formatStorageBytes(usage.usedBytes)}\uFF0C\u672C\u6B21\u4E0A\u4F20\u9700\u8981 ${formatStorageBytes(incomingBytes)}\uFF0C\u4E34\u65F6\u4E0A\u67B6\u989D\u5EA6 ${formatStorageBytes(usage.limitBytes)}\uFF1B\u56FE\u7247\u4FDD\u7559 1 \u5929\uFF0C\u7CFB\u7EDF\u5C06\u5728\u4E0B\u4E00\u6B21\u6E05\u7406\u4EFB\u52A1\u540E\u91CA\u653E\u7A7A\u95F4\uFF0C\u666E\u901A\u56FE\u5E93\u989D\u5EA6\u4E0D\u53D7\u5F71\u54CD`,
     );
   }
 }
@@ -2645,41 +2598,6 @@ async function readGalleryStorageUsage(userId, queryable = pool) {
     galleryBytes: Number(row?.gallery_bytes ?? 0),
     legacyBytes: 0,
     grantBytes: 0,
-  };
-}
-async function readLegacyListingStorageUsage(userId, queryable = pool) {
-  const result = await queryable.query(
-    `
-    SELECT
-      COALESCE(legacy.used_bytes, 0)::bigint AS legacy_bytes,
-      COALESCE(grants.used_bytes, 0)::bigint AS grant_bytes
-    FROM users u
-    LEFT JOIN (
-      SELECT user_id, COALESCE(sum(size_bytes), 0)::bigint AS used_bytes
-      FROM legacy_listing_uploads
-      GROUP BY user_id
-    ) legacy ON legacy.user_id = u.id
-    LEFT JOIN (
-      SELECT user_id, COALESCE(sum(size_bytes), 0)::bigint AS used_bytes
-      FROM legacy_listing_upload_grants
-      WHERE completed_at IS NULL
-        AND expires_at > now()
-      GROUP BY user_id
-    ) grants ON grants.user_id = u.id
-    WHERE u.id = $1
-    `,
-    [userId],
-  );
-  const row = result.rows[0];
-  const totals = legacyListingStorageUsageTotals({
-    confirmedLegacyBytes: Number(row?.legacy_bytes ?? 0),
-    reservedLegacyBytes: Number(row?.grant_bytes ?? 0),
-  });
-  return {
-    limitBytes: legacyListingStorageLimitBytes(),
-    usedBytes: totals.usedBytes,
-    legacyBytes: Number(row?.legacy_bytes ?? 0),
-    grantBytes: Number(row?.grant_bytes ?? 0),
   };
 }
 __name(readGalleryStorageUsage, "readGalleryStorageUsage");

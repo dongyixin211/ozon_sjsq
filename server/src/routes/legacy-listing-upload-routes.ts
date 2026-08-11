@@ -10,7 +10,7 @@ const presignSchema = z.object({
   sku: z.string().trim().min(1).max(240),
   filename: z.string().trim().min(1).max(240),
   contentType: z.enum(["image/jpeg", "image/png", "image/webp"]),
-  sizeBytes: z.coerce.number().int().positive().max(100 * 1024 * 1024),
+  sizeBytes: z.coerce.number().int().positive(),
 });
 const completeSchema = z.object({ objectKey: z.string().trim().min(1).max(600) }).strict();
 

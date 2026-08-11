@@ -1,4 +1,4 @@
-﻿/* 基础样式 — 设计令牌由 tokens.css 统一管理 (docs/ui-design-system-spec.md) */
+/* 基础样式 — 设计令牌由 tokens.css 统一管理 (docs/ui-design-system-spec.md) */
 :root {
   font-family: Inter, var(--font-sans);
   color: var(--color-text);
@@ -6428,5 +6428,301 @@ tbody tr:hover td,
 @media (max-width: 900px) {
   .dashboard-page .order-metrics {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Web shop-management compact sticky controls */
+.web-app-shell .shop-maintenance-command-bar,
+.web-app-shell .shop-manager-command-bar {
+  position: sticky;
+  z-index: 16;
+  box-shadow: 0 10px 22px rgba(31, 42, 68, 0.08);
+}
+
+.web-app-shell .shop-maintenance-command-bar {
+  top: 92px;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.web-app-shell .shop-maintenance-command-bar .panel-header {
+  display: contents;
+  margin: 0;
+}
+
+.web-app-shell .shop-maintenance-command-bar .panel-header > div:first-child {
+  display: contents;
+}
+
+.web-app-shell .shop-maintenance-command-bar .panel-header p,
+.web-app-shell .shop-manager-command-bar .panel-header p {
+  display: none;
+}
+
+.web-app-shell .shop-maintenance-command-bar h2,
+.web-app-shell .shop-manager-command-bar h2 {
+  white-space: nowrap;
+}
+
+.web-app-shell .shop-maintenance-command-bar .toolbar {
+  flex-wrap: nowrap;
+}
+
+.web-app-shell .shop-maintenance-command-bar .shop-center-summary {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.web-app-shell .shop-maintenance-command-bar .shop-summary-item {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  min-height: 0;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 0;
+  background: var(--color-surface-soft);
+}
+
+.web-app-shell .shop-maintenance-command-bar .shop-summary-item strong {
+  font-size: 13px;
+}
+
+.web-app-shell .shop-manager-command-bar {
+  top: 154px;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.web-app-shell .shop-manager-command-bar .panel-header {
+  display: contents;
+  margin: 0;
+}
+
+.web-app-shell .shop-manager-command-bar .panel-header > div:first-child {
+  display: contents;
+}
+
+.web-app-shell .shop-manager-command-bar .toolbar {
+  flex-wrap: nowrap;
+}
+
+.web-app-shell .shop-manager-command-bar .shop-manager-summary {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+  margin: 0;
+  overflow-x: auto;
+}
+
+.web-app-shell .shop-manager-command-bar .shop-manager-summary > div,
+.web-app-shell .shop-manager-command-bar .shop-search-field {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  min-height: 0;
+  gap: 5px;
+  padding: 5px 8px;
+}
+
+.web-app-shell .shop-manager-command-bar .shop-manager-summary strong {
+  margin: 0;
+  font-size: 14px;
+}
+
+.web-app-shell .shop-manager-command-bar .shop-search-field {
+  align-items: center;
+}
+
+.web-app-shell .shop-manager-command-bar .shop-search-field span {
+  white-space: nowrap;
+}
+
+.web-app-shell .shop-manager-command-bar .shop-search-field input {
+  width: 180px;
+}
+
+.web-app-shell .shop-workspace-center .shop-detail {
+  gap: 10px;
+}
+
+.web-app-shell .shop-workspace-center .shop-center-body {
+  display: block;
+}
+
+.web-app-shell .shop-workspace-center .shop-primary-workflow {
+  display: none;
+}
+
+.web-app-shell .shop-workspace-center .shop-function-menu {
+  position: sticky;
+  top: 92px;
+  z-index: 16;
+  display: flex;
+  gap: 6px;
+  margin: 0 -14px;
+  padding: 9px 14px;
+  overflow-x: auto;
+  border-block: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 18px rgba(31, 42, 68, 0.06);
+  backdrop-filter: blur(12px);
+}
+
+.web-app-shell .shop-workspace-center .shop-function-menu .task-nav-item {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  box-shadow: none;
+  white-space: nowrap;
+}
+
+.web-app-shell .shop-workspace-center .shop-function-menu .task-nav-item strong {
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .web-app-shell .shop-maintenance-command-bar,
+  .web-app-shell .shop-manager-command-bar,
+  .web-app-shell .shop-workspace-center .shop-function-menu {
+    top: 0;
+  }
+
+  .web-app-shell .shop-maintenance-command-bar,
+  .web-app-shell .shop-manager-command-bar {
+    display: flex;
+    width: max-content;
+    min-width: 100%;
+  }
+}
+/* Web shop center minimal header */
+.web-app-shell .shop-workspace-center .shop-hero {
+  display: block;
+  min-height: 56px;
+  padding: 12px 14px;
+}
+
+.web-app-shell .shop-workspace-center .shop-hero-main,
+.web-app-shell .shop-workspace-center .shop-hero-copy {
+  display: block;
+}
+
+.web-app-shell .shop-workspace-center .shop-avatar,
+.web-app-shell .shop-workspace-center .shop-hero-title,
+.web-app-shell .shop-workspace-center .shop-hero-copy p,
+.web-app-shell .shop-workspace-center .shop-actions,
+.web-app-shell .shop-workspace-center .shop-center-summary {
+  display: none;
+}
+
+.web-app-shell .shop-workspace-center .shop-hero h2 {
+  font-size: 18px;
+}
+
+.web-app-shell .shop-workspace-center .shop-function-menu {
+  top: 92px;
+}
+/* Web shop center compact card and fixed menu */
+.web-app-shell .shop-workspace-center {
+  justify-self: start;
+  width: min(100%, 820px);
+}
+
+.web-app-shell .shop-workspace-center .shop-detail {
+  padding-bottom: 58px;
+}
+
+.web-app-shell .shop-workspace-center .shop-function-menu {
+  position: fixed;
+  top: 92px;
+  left: calc(var(--sidebar-width) + var(--space-6));
+  z-index: 30;
+  width: min(820px, calc(100vw - var(--sidebar-width) - (var(--space-6) * 2)));
+  margin: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow-panel);
+}
+
+@media (max-width: 900px) {
+  .web-app-shell .shop-workspace-center {
+    width: 100%;
+  }
+
+  .web-app-shell .shop-workspace-center .shop-function-menu {
+    left: var(--space-3);
+    width: calc(100vw - (var(--space-3) * 2));
+  }
+}
+/* Web topbar shop context */
+.web-app-shell .shop-workspace-center {
+  display: none;
+}
+
+.web-app-shell .topbar-page-context {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.web-app-shell .ozon-topbar-context {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.web-app-shell .ozon-topbar-shop-name {
+  flex: 0 0 auto;
+  color: var(--color-text-heading);
+  font-size: 18px;
+  white-space: nowrap;
+}
+
+.web-app-shell .ozon-topbar-context .shop-function-menu {
+  position: static;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.web-app-shell .ozon-topbar-context .shop-function-menu .task-nav-item {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 9px;
+  border-radius: 6px;
+  box-shadow: none;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .web-app-shell .ozon-topbar-context {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .web-app-shell .ozon-topbar-context .shop-function-menu {
+    width: 100%;
   }
 }

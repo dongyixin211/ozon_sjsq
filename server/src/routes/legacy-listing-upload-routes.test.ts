@@ -110,48 +110,6 @@ test("legacy listing metadata validation rejects size and content-type mismatch"
     { ok: true },
   );
 });
-test("legacy listing storage uses a separate 50 GB quota", () => {
-  const usage = legacyListingStorageUsageTotals({
-    galleryBytes: 50 * 1024 ** 3,
-    confirmedLegacyBytes: 10 * 1024 ** 3,
-    reservedLegacyBytes: 2 * 1024 ** 3,
-  });
-  assert.equal(usage.usedBytes, 12 * 1024 ** 3);
-  assert.equal(legacyListingStorageLimitBytes({}), 50 * 1024 ** 3);
-  assert.equal(
-    legacyListingStorageLimitBytes({ LEGACY_LISTING_STORAGE_LIMIT_GB: "60" }),
-    60 * 1024 ** 3,
-  );
-  assert.deepEqual(
-    validateLegacyListingUploadQuota(
-      { limitBytes: legacyListingStorageLimitBytes({}), usedBytes: usage.usedBytes },
-      38 * 1024 ** 3,
-    ),
-    { ok: true },
-  );
-});
-test("legacy listing storage totals include reserved active grants once", () => {
-  assert.equal(
-    legacyListingStorageUsageTotals({
-      galleryBytes: 100,
-      confirmedLegacyBytes: 20,
-      reservedLegacyBytes: 30,
-    }).usedBytes,
-    50,
-  );
-  assert.deepEqual(
-    validateLegacyListingUploadQuota({ limitBytes: 200, usedBytes: 150 }, 50),
-    { ok: true },
-  );
-  assert.deepEqual(
-    validateLegacyListingUploadQuota({ limitBytes: 200, usedBytes: 151 }, 50),
-    { ok: false, code: "GALLERY_STORAGE_LIMIT_EXCEEDED" },
-  );
-  assert.deepEqual(
-    validateLegacyListingUploadQuota({ limitBytes: 0, usedBytes: 1e4 }, 50),
-    { ok: true },
-  );
-});
 test("legacy listing complete body rejects client supplied metadata", () => {
   assert.deepEqual(
     parseLegacyListingCompleteBody({

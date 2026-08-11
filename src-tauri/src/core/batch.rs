@@ -139,7 +139,7 @@ fn cloud_upload_error_message(status: reqwest::StatusCode, body: &str) -> String
         return "当前账号未开通或会员已到期，请先兑换授权后再进行统一 OSS 上架。".to_string();
     }
     if status == reqwest::StatusCode::INSUFFICIENT_STORAGE {
-        return "\u{4e34}\u{65f6}\u{4e0a}\u{67b6}\u{56fe}\u{7247}\u{7a7a}\u{95f4}\u{4e0d}\u{8db3}\u{ff1a}\u{8bf7}\u{7b49}\u{5f85}\u{7cfb}\u{7edf}\u{6e05}\u{7406} 1 \u{5929}\u{524d}\u{7684}\u{4e34}\u{65f6}\u{56fe}\u{7247}\u{540e}\u{91cd}\u{8bd5}\u{ff0c}\u{6216}\u{8054}\u{7cfb}\u{7ba1}\u{7406}\u{5458}\u{6269}\u{5bb9}\u{3002}".to_string();
+        return "\u{4e91}\u{7aef}\u{5b58}\u{50a8}\u{670d}\u{52a1}\u{6682}\u{65f6}\u{4e0d}\u{53ef}\u{7528}\u{ff0c}\u{8bf7}\u{7a0d}\u{540e}\u{91cd}\u{8bd5}\u{ff1b}\u{5982}\u{679c}\u{6301}\u{7eed}\u{51fa}\u{73b0}\u{ff0c}\u{8bf7}\u{8054}\u{7cfb}\u{7ba1}\u{7406}\u{5458}\u{68c0}\u{67e5}\u{670d}\u{52a1}\u{5668}\u{5b58}\u{50a8}\u{3002}".to_string();
     }
     if status == reqwest::StatusCode::FORBIDDEN {
         return "\u{4e91}\u{7aef}\u{62d2}\u{7edd}\u{4e86}\u{56fe}\u{7247}\u{4e0a}\u{4f20}\u{8bf7}\u{6c42}\u{ff0c}\u{8bf7}\u{68c0}\u{67e5}\u{8d26}\u{53f7}\u{6388}\u{6743}\u{548c}\u{4e91}\u{56fe}\u{5e93}\u{5bb9}\u{91cf}\u{ff1b}\u{4ecd}\u{65e0}\u{6cd5}\u{4f7f}\u{7528}\u{65f6}\u{8054}\u{7cfb}\u{7ba1}\u{7406}\u{5458}\u{3002}".to_string();
@@ -1360,7 +1360,7 @@ mod tests {
     #[test]
     fn cloud_upload_error_hides_raw_507_status() {
         let message = cloud_upload_error_message(reqwest::StatusCode::INSUFFICIENT_STORAGE, "");
-        assert!(message.contains("\u{4e34}\u{65f6}\u{4e0a}\u{67b6}\u{56fe}\u{7247}\u{7a7a}\u{95f4}\u{4e0d}\u{8db3}"));
+        assert!(message.contains("\u{4e91}\u{7aef}\u{5b58}\u{50a8}\u{670d}\u{52a1}\u{6682}\u{65f6}\u{4e0d}\u{53ef}\u{7528}"));
         assert!(!message.contains("HTTP 507"));
         assert!(!message.contains("HTTP status client error"));
     }

@@ -19,6 +19,7 @@ export const PAGE_FEATURE_MAP: Partial<Record<PageKey, string>> = {
   imageProcessing: "gallery.processing",
   imageUploaded: "gallery.uploaded",
   imageFeatured: "gallery.featured",
+  materialAiImage: "ai.image_generation",
   // 上架模块 - 测试中功能
   autoListingPlans: "listing.auto_plans",
   // 管理后台 - 仅 admin 可见

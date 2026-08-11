@@ -341,4 +341,22 @@ describe("OzonPage", () => {
     await waitFor(() => expect(api.cancelJob).toHaveBeenCalledWith("maintenance-a"));
     expect(api.cancelJob).toHaveBeenCalledTimes(1);
   });
+  it("renders the compact feature menu without descriptions", async () => {
+    render(
+      <OzonPage
+        shops={[shop("shop-a", "Main shop")]}
+        settings={settings}
+        onChanged={vi.fn()}
+        onNavigate={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "功能中心" }));
+    const navigation = await screen.findByRole("navigation", { name: "Ozon 任务导航" });
+
+    expect(navigation.className).toContain("shop-function-menu");
+    expect(within(navigation).queryByText("用 Excel、图片目录和商品模板创建 Ozon 上架任务。")).toBeNull();
+    fireEvent.click(within(navigation).getByRole("button", { name: "更新商品" }));
+    expect(await screen.findByRole("heading", { name: "已上架更新" })).toBeTruthy();
+  });
 });

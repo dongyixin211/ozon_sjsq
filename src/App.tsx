@@ -66,6 +66,7 @@ export function App() {
   const [assistant, setAssistant] = useState<LocalAssistantStatus>(ASSISTANT_CHECKING_STATUS);
   const [cloudAiSettings, setCloudAiSettings] = useState<AiSettingsPublic | null>(null);
   const [ozonHomeRequest, setOzonHomeRequest] = useState(0);
+  const [pageHeaderExtra, setPageHeaderExtra] = useState<React.ReactNode>(null);
 
   // RBAC: 根据用户功能权限过滤菜单
   const { features } = useFeatures();
@@ -240,6 +241,10 @@ export function App() {
     });
   }, [accountId, assistantConnected, cloudAuthToken, settings.cloudApiBaseUrl]);
 
+  useEffect(() => {
+    if (page !== "ozon") setPageHeaderExtra(null);
+  }, [page]);
+
   const navigate = (nextPage: PageKey) => {
     setPage(nextPage);
     if (nextPage === "ozon") {
@@ -248,7 +253,7 @@ export function App() {
   };
 
   const appContent = (
-    <div className="app-shell">
+    <div className="app-shell web-app-shell">
       <aside className="sidebar">
         <div className="brand">
           <Boxes size={28} />
@@ -285,6 +290,7 @@ export function App() {
             <span className="eyebrow">浏览器工作台</span>
             <h1>{pageTitle}</h1>
           </div>
+          <div className="topbar-page-context">{pageHeaderExtra}</div>
           <div className="topbar-actions">
             <span className={assistantConnected ? "status-pill" : assistantChecking ? "badge neutral" : "badge warn"}>
               {assistantConnected ? <MonitorUp size={14} /> : assistantChecking ? <RefreshCw size={14} className="spin-icon" /> : <WifiOff size={14} />}
@@ -362,6 +368,7 @@ export function App() {
             homeRequest={ozonHomeRequest}
             onChanged={refresh}
             onNavigate={navigate}
+            onHeaderChange={setPageHeaderExtra}
           />
         )}
         {page === "orders" && settings && <OrdersPage shops={shops} settings={settings} onChanged={refresh} onNavigate={navigate} />}
